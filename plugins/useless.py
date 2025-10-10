@@ -58,11 +58,24 @@ def exception_handler(func):
                 content_type="application/json"
             )
         except FileNotFound as e:
-            logger.debug(f"FileNotFound exception: {e}")
+            #logger.debug(f"FileNotFound exception: {e}") 
+            error_html = """
+                <html>
+                <head><title>Link Expired</title></head>
+                <body style="background-color:#121212; color:#ff4d4d; text-align:center; font-family:Arial, sans-serif; padding-top:100px;">
+                    <h1 style="font-size:2em;">🚫 ᴛʜɪꜱ ʟɪɴᴋ ʜᴀꜱ ᴇxᴘɪʀᴇᴅ ᴏʀ ᴛʜᴇ ꜰɪʟᴇ ᴡᴀꜱ ʀᴇᴍᴏᴠᴇᴅ</h1>
+                    <h2 style="color:#5fffd4; margin-top:20px;">⏳ ᴘʟᴇᴀꜱᴇ ꜱᴇᴀʀᴄʜ ᴀɢᴀɪɴ ᴀɴᴅ ɢᴇɴᴇʀᴀᴛᴇ ᴀ ɴᴇᴡ ʟɪɴᴋ ꜰʀᴏᴍ ᴛʜᴇ ʙᴏᴛ.</h2>
+                </body>
+                </html>
+            """
             raise web.HTTPNotFound(
-                text=json_error(404, "File not found"),
-                content_type="application/json"
+                text=error_html,
+                content_type="text/html"
             )
+            #raise web.HTTPNotFound(
+               # text=json_error(404, "File not found"),
+                #content_type="application/json"
+           # )
         except (ClientConnectionError, asyncio.CancelledError):
             return web.Response(status=499)
         except web.HTTPException:
@@ -409,3 +422,7 @@ async def optimized_mobile_stream(request: web.Request, msg_id: int, secure_hash
 
         await resp.write_eof()
         return resp
+
+
+
+
