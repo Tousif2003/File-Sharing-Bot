@@ -58,11 +58,24 @@ def exception_handler(func):
                 content_type="application/json"
             )
         except FileNotFound as e:
-            logger.debug(f"FileNotFound exception: {e}")
+            #logger.debug(f"FileNotFound exception: {e}") 
+            error_html = """
+                <html>
+                <head><title>Link Expired</title></head>
+                <body style="background-color:#121212; color:#ff4d4d; text-align:center; font-family:Arial, sans-serif; padding-top:100px;">
+                    <h1 style="font-size:2em;">🚫 ᴛʜɪꜱ ʟɪɴᴋ ʜᴀꜱ ᴇxᴘɪʀᴇᴅ ᴏʀ ᴛʜᴇ ꜰɪʟᴇ ᴡᴀꜱ ʀᴇᴍᴏᴠᴇᴅ</h1>
+                    <h2 style="color:#5fffd4; margin-top:20px;">⏳ ᴘʟᴇᴀꜱᴇ ꜱᴇᴀʀᴄʜ ᴀɢᴀɪɴ ᴀɴᴅ ɢᴇɴᴇʀᴀᴛᴇ ᴀ ɴᴇᴡ ʟɪɴᴋ ꜰʀᴏᴍ ᴛʜᴇ ʙᴏᴛ.</h2>
+                </body>
+                </html>
+            """
             raise web.HTTPNotFound(
-                text=json_error(404, "File not found"),
-                content_type="application/json"
+                text=error_html,
+                content_type="text/html"
             )
+            #raise web.HTTPNotFound(
+               # text=json_error(404, "File not found"),
+                #content_type="application/json"
+           # )
         except (ClientConnectionError, asyncio.CancelledError):
             return web.Response(status=499)
         except web.HTTPException:
@@ -197,6 +210,116 @@ async def media_preview(request: web.Request):
     path = request.match_info["path"]
     message_id, secure_hash = parse_media_request(path, request.query)
     rendered_page = await render_page(message_id, secure_hash, requested_action='stream')
+
+    # Inject JS to auto-switch to Hindi audio and add manual dropdown
+    audio_control_script = """
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const video = document.querySelector('video');
+        if (!video) return;
+
+        let hindiFound = false;
+
+        // Native HTML5 audio track switching
+        if (video.audioTracks && video.audioTracks.length > 0) {
+            // Create dropdown for manual switching
+            const select = document.createElement('select');
+            select.style.position = 'absolute';
+            select.style.top = '10px';
+            select.style.right = '10px';
+            select.style.zIndex = 1000;
+            select.style.padding = '5px';
+            select.style.background = 'rgba(0,0,0,0.5)';
+            select.style.color = '#fff';
+            select.style.border = 'none';
+            select.style.borderRadius = '4px';
+
+            for (let i = 0; i < video.audioTracks.length; i++) {
+                const track = video.audioTracks[i];
+                const option = document.createElement('option');
+                option.value = i;
+                option.text = track.label || 'Track ' + (i+1);
+                select.appendChild(option);
+
+                // Auto-enable Hindi if available
+                if (track.label.toLowerCase().includes('hindi')) {
+                    track.enabled = true;
+                    hindiFound = true;
+                    select.value = i;
+                } else {
+                    track.enabled = false;
+                }
+            }
+
+            // Fallback to first track if Hindi not found
+            if (!hindiFound) video.audioTracks[0].enabled = true;
+
+            // Switch track on dropdown change
+            select.addEventListener('change', () => {
+                const idx = parseInt(select.value);
+                for (let i = 0; i < video.audioTracks.length; i++) {
+                    video.audioTracks[i].enabled = (i === idx);
+                }
+            });
+
+            document.body.appendChild(select);
+        }
+
+        // HLS streaming support
+        if (window.Hls && Hls.isSupported() && video.src.endsWith('.m3u8')) {
+            const hls = new Hls();
+            hls.loadSource(video.src);
+            hls.attachMedia(video);
+
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                let trackFound = false;
+                const audioTracks = hls.audioTracks;
+                if (audioTracks.length > 0) {
+                    // Create dropdown
+                    const select = document.createElement('select');
+                    select.style.position = 'absolute';
+                    select.style.top = '10px';
+                    select.style.right = '10px';
+                    select.style.zIndex = 1000;
+                    select.style.padding = '5px';
+                    select.style.background = 'rgba(0,0,0,0.5)';
+                    select.style.color = '#fff';
+                    select.style.border = 'none';
+                    select.style.borderRadius = '4px';
+
+                    for (let i = 0; i < audioTracks.length; i++) {
+                        const option = document.createElement('option');
+                        option.value = i;
+                        option.text = audioTracks[i].name || 'Track ' + (i+1);
+                        select.appendChild(option);
+
+                        if (audioTracks[i].name.toLowerCase().includes('hindi')) {
+                            hls.audioTrack = i;
+                            trackFound = true;
+                            select.value = i;
+                        }
+                    }
+
+                    if (!trackFound) hls.audioTrack = 0;
+
+                    select.addEventListener('change', () => {
+                        hls.audioTrack = parseInt(select.value);
+                    });
+
+                    document.body.appendChild(select);
+                }
+            });
+        }
+    });
+    </script>
+    """
+
+    # Inject before </body>
+    if '</body>' in rendered_page:
+        rendered_page = rendered_page.replace('</body>', audio_control_script + '</body>')
+    else:
+        rendered_page += audio_control_script
+
     return web.Response(
         text=rendered_page,
         content_type='text/html',
@@ -323,7 +446,7 @@ async def async_gen_wrapper(sync_gen):
 
 
 # ==============================
-# ✅ Old Mobile Download Code Restored
+# 🚀 Optimized Mobile Download Code (Hybrid)
 # ==============================
 
 @routes.get(r"/download/{path:.+}", allow_head=True)
@@ -331,58 +454,86 @@ async def async_gen_wrapper(sync_gen):
 async def mobile_download(request: web.Request):
     path = request.match_info["path"]
     message_id, secure_hash = parse_media_request(path, request.query)
-    return await mobile_media_streamer(request, message_id, secure_hash)
+    return await optimized_mobile_stream(request, message_id, secure_hash)
 
-async def mobile_media_streamer(request: web.Request, msg_id: int, secure_hash: str):
-    range_header = request.headers.get("Range", "")
+
+async def optimized_mobile_stream(request: web.Request, msg_id: int, secure_hash: str):
+    """Hybrid mobile download: Old speed + New safety"""
     client_id, client = optimal_client_selection()
-    streamer = await get_cached_streamer(client)
-    file_id = await streamer.get_file_properties(msg_id)
+    async with track_workload(client_id):
+        streamer = await get_cached_streamer(client)
+        file_meta = await streamer.get_file_properties(msg_id)
 
-    if file_id.unique_id[:SECURE_HASH_LENGTH] != secure_hash:
-        raise InvalidHash("Invalid security hash")
+        # ✅ Security check
+        if file_meta.unique_id[:SECURE_HASH_LENGTH] != secure_hash:
+            raise InvalidHash("Invalid security hash")
 
-    file_size = file_id.file_size
-    if range_header:
-        from_bytes, until_bytes = range_header.replace("bytes=", "").split("-")
-        from_bytes = int(from_bytes)
-        until_bytes = int(until_bytes) if until_bytes else file_size - 1
-    else:
-        from_bytes, until_bytes = 0, file_size - 1
+        file_size = file_meta.file_size
+        range_header = request.headers.get("Range", "")
 
-    if until_bytes > file_size or from_bytes < 0 or until_bytes < from_bytes:
-        return web.Response(
-            status=416,
-            body="416: Range not satisfiable",
-            headers={"Content-Range": f"bytes */{file_size}"},
-        )
+        # ✅ Lightweight Range parsing (old style)
+        if range_header:
+            try:
+                from_bytes, until_bytes = range_header.replace("bytes=", "").split("-")
+                from_bytes = int(from_bytes) if from_bytes else 0
+                until_bytes = int(until_bytes) if until_bytes else file_size - 1
+            except Exception:
+                raise web.HTTPBadRequest(
+                    text=json_error(400, "Malformed range header"),
+                    content_type="application/json"
+                )
+        else:
+            from_bytes, until_bytes = 0, file_size - 1
 
-    chunk_size = 1024 * 1024
-    offset = from_bytes - (from_bytes % chunk_size)
-    req_length = until_bytes - from_bytes + 1
+        # ✅ Range validation (from new code)
+        if until_bytes >= file_size or from_bytes < 0 or until_bytes < from_bytes:
+            raise web.HTTPRequestRangeNotSatisfiable(
+                headers={"Content-Range": f"bytes */{file_size}"}
+            )
 
-    stream_generator = streamer.yield_file(
-        file_id, client_id, offset, 0, None,
-        math.ceil(req_length / chunk_size), chunk_size
-    )
+        # ✅ Chunk math (old-style fast calc)
+        chunk_size = CHUNK_SIZE
+        offset = from_bytes - (from_bytes % chunk_size)
+        req_length = until_bytes - from_bytes + 1
+        total_chunks = math.ceil(req_length / chunk_size)
 
-    filename = file_id.file_name or f"{secrets.token_hex(2)}.bin"
+        # ✅ Direct generator (no async wrapper unless needed)
+        if hasattr(streamer, "async_yield_file"):
+            stream_generator = streamer.async_yield_file(
+                file_meta, client_id, offset, 0, None, total_chunks, chunk_size
+            )
+        else:
+            stream_generator = streamer.yield_file(
+                file_meta, client_id, offset, 0, None, total_chunks, chunk_size
+            )
 
-    headers = {
-        "Content-Type": "application/octet-stream",
-        "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
-        "Content-Length": str(req_length),
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Accept-Ranges": "bytes",
-    }
+        # ✅ Safer filename handling
+        filename = sanitize_filename(file_meta.file_name or f"{secrets.token_hex(2)}.bin")
+        encoded_filename = quote(filename)
 
-    resp = web.StreamResponse(status=206 if range_header else 200, headers=headers)
-    await resp.prepare(request)
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
+            "Content-Length": str(req_length),
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Content-Type-Options": "nosniff",
+        }
 
-    async for chunk in stream_generator:
-        if chunk:
-            await resp.write(chunk)
-            await asyncio.sleep(0)
+        resp = web.StreamResponse(status=206 if range_header else 200, headers=headers)
+        await resp.prepare(request)
 
-    await resp.write_eof()
-    return resp
+        async for chunk in stream_generator:
+            if chunk:
+                await resp.write(chunk)
+                await asyncio.sleep(0)  # keep event loop responsive
+
+        await resp.write_eof()
+        return resp
+
+
+
+
+
