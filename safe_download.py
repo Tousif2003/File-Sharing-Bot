@@ -3,30 +3,54 @@ import math
 import secrets
 from pyrogram import Client
 from pyrogram.errors import FloodWait, RPCError
-
 from dotenv import load_dotenv
 import os
+from contextlib import asynccontextmanager
 
-# Load environment variables from config.env
+# ================= Load Environment Variables =================
 load_dotenv("config.env")
-# Access variables
-multi_clients = int(os.getenv("MULTI_CLIENTS", 1))
-work_loads = int(os.getenv("WORK_LOADS", 1))
-print(f"Multi Clients: {multi_clients}, Work Loads: {work_loads}")
 
+# ================= Multi-client Initialization =================
+multi_clients = []
+
+# ----- API_ID/API_HASH clients -----
+i = 1
+while True:
+    api_id = os.getenv(f"API_ID_{i}")
+    api_hash = os.getenv(f"API_HASH_{i}")
+    if not api_id or not api_hash:
+        break
+    client = Client(f"session_api_{i}", api_id=int(api_id), api_hash=api_hash)
+    multi_clients.append(client)
+    i += 1
+
+# ----- Bot token clients -----
+i = 1
+while True:
+    token = os.getenv(f"MULTI_TOKEN{i}")
+    if not token:
+        break
+    client = Client(f"session_bot_{i}", bot_token=token)
+    multi_clients.append(client)
+    i += 1
+
+if not multi_clients:
+    raise Exception("❌ No clients found! Add API_ID/API_HASH or MULTI_TOKENs in config.env")
+
+work_loads = {idx: 0 for idx in range(len(multi_clients))}
+print(f"✅ Loaded {len(multi_clients)} clients")
+
+# ================= Download Configuration =================
 CHUNK_SIZE_SMALL = 512 * 1024      # 512 KB for large files
 CHUNK_SIZE_LARGE = 1024 * 1024     # 1 MB for small files
 TIMEOUT = 25                        # per chunk timeout in seconds
 MAX_RETRIES = 5                      # retries per chunk
-SAVE_DIR = "/tmp"                    # RAM-backed directory for Koyeb
-MAX_CONCURRENT_DOWNLOADS = 2         # limit concurrent downloads globally
-# =========================================
+SAVE_DIR = "/tmp"                    # RAM-backed directory for Heroku/Koyeb
+MAX_CONCURRENT_DOWNLOADS = 5         # limit concurrent downloads globally
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # ======= Workload tracking for multi-client =======
-from contextlib import asynccontextmanager
-
 @asynccontextmanager
 async def track_workload(client_index):
     work_loads[client_index] += 1
@@ -42,11 +66,7 @@ def get_optimal_client():
 
 # ======= Safe Cross-DC Chunked Download Function =======
 async def safe_download(client: Client, message):
-    """
-    Download Telegram file safely with adaptive chunk size.
-    Works for multi-DC files and optimized for Koyeb.
-    """
-    # Determine file name
+    """Download Telegram file safely with adaptive chunk size."""
     file_name = "file"
     file_size = 0
 
@@ -60,12 +80,11 @@ async def safe_download(client: Client, message):
         file_name = message.audio.file_name
         file_size = message.audio.file_size
 
-    # Sanitize filename for safety
+    # Sanitize filename
     file_name = "".join(c for c in file_name if c.isalnum() or c in (" ", ".", "_", "-"))
     file_path = os.path.join(SAVE_DIR, file_name)
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    # Adaptive chunk size
     chunk_size = CHUNK_SIZE_SMALL if file_size > 200 * 1024 * 1024 else CHUNK_SIZE_LARGE
     offset = 0
     retries = 0
@@ -77,12 +96,7 @@ async def safe_download(client: Client, message):
             while True:
                 try:
                     data = await asyncio.wait_for(
-                        client.download_media(
-                            message,
-                            in_memory=True,
-                            offset=offset,
-                            limit=chunk_size
-                        ),
+                        client.download_media(message, in_memory=True, offset=offset, limit=chunk_size),
                         timeout=TIMEOUT
                     )
 
@@ -92,13 +106,13 @@ async def safe_download(client: Client, message):
 
                     f.write(data)
                     offset += len(data)
-                    retries = 0  # reset retries after success
+                    retries = 0
 
                 except asyncio.TimeoutError:
                     retries += 1
                     print(f"⚠️ Timeout at offset {offset}, retry {retries}/{MAX_RETRIES}")
                     if retries >= MAX_RETRIES:
-                        print("❌ Aborting download after too many timeouts")
+                        print("❌ Aborting download due to repeated timeouts")
                         break
                     await asyncio.sleep(2)
 
@@ -118,7 +132,7 @@ async def safe_download(client: Client, message):
                     retries += 1
                     print(f"⚠️ Unknown error: {e}. Retry {retries}/{MAX_RETRIES}")
                     if retries >= MAX_RETRIES:
-                        print("❌ Stopping after unknown repeated errors")
+                        print("❌ Stopping after repeated unknown errors")
                         break
                     await asyncio.sleep(3)
 
@@ -127,16 +141,15 @@ async def safe_download(client: Client, message):
 
 # ======= Multi-client download wrapper =======
 async def download_file(message):
-    """
-    Automatically selects optimal client and downloads file.
-    """
+    """Select optimal client and download file."""
     client_index, client = get_optimal_client()
+    print(f"🔹 Using client {client_index} for download")
     async with track_workload(client_index):
         return await safe_download(client, message)
 
-# ======= Connection Watchdog for all clients =======
+# ======= Connection Watchdog =======
 async def connection_watchdog(client, name):
-    """Keep a client session alive on Koyeb."""
+    """Keep a client session alive."""
     while True:
         await asyncio.sleep(300)
         try:
@@ -147,24 +160,14 @@ async def connection_watchdog(client, name):
             await asyncio.sleep(5)
             await client.start()
 
-# ======= Example Usage =======
+# ======= Main Bot Starter =======
 async def main():
-    # Start all clients
     for i, client in enumerate(multi_clients):
         await client.start()
         print(f"✅ Client {i} started: {client.session_name}")
-
-        # Start watchdog per client
         asyncio.create_task(connection_watchdog(client, client.session_name))
 
     print("⚡ ThunderBot Multi-Client Safe Downloader started")
-    print("✅ Ready to download files from any DC safely!")
-
-    # Example usage:
-    # Replace 'message' with your Pyrogram message object
-    # downloaded_file = await download_file(message)
-    # print(f"Downloaded file path: {downloaded_file}")
-
     await asyncio.get_event_loop().create_future()  # keep bot running
 
 if __name__ == "__main__":
