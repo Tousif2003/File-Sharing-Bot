@@ -40,14 +40,15 @@ if not multi_clients:
 work_loads = {idx: 0 for idx in range(len(multi_clients))}
 print(f"✅ Loaded {len(multi_clients)} clients")
 
-# ================= Download Configuration =================
+# ======= Download Configuration =======
 CHUNK_SIZE_SMALL = 512 * 1024      # 512 KB for large files
 CHUNK_SIZE_LARGE = 1024 * 1024     # 1 MB for small files
-TIMEOUT = 25                        # per chunk timeout in seconds
-MAX_RETRIES = 5                      # retries per chunk
+TIMEOUT = 20                        # Timeout per chunk in seconds
+MAX_RETRIES = 6                      # Maximum retries per chunk
 SAVE_DIR = "/tmp"                    # RAM-backed directory for Heroku/Koyeb
-MAX_CONCURRENT_DOWNLOADS = 5         # limit concurrent downloads globally
+MAX_CONCURRENT_DOWNLOADS = 6         # Maximum concurrent downloads globally
 
+# Semaphore to control concurrency
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # ======= Workload tracking for multi-client =======
