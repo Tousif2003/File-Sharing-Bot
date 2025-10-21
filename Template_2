@@ -254,17 +254,24 @@ document.addEventListener('DOMContentLoaded', () => {
         ]
     });
 
-    // 🔊 Audio Booster (safe)
+    // 🔊 Audio Boost / AAC-EAC3 fix
     let audioContext, gainNode;
-    function setupAudioBoost() {
+    function setupAudioContext() {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioContext.createMediaElementSource(videoEl);
             gainNode = audioContext.createGain();
-            gainNode.gain.value = 3.0; // 3x louder
+            gainNode.gain.value = 1.0; // normal volume initially
             source.connect(gainNode);
             gainNode.connect(audioContext.destination);
         }
+        audioContext.resume().catch(()=>{});
+    }
+
+    // Resume AudioContext on any interaction
+    function resumeAudio() {
+        setupAudioContext();
+        if (audioContext) audioContext.resume().catch(()=>{});
     }
 
     // ==========================
@@ -272,14 +279,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // ==========================
     let seekTimeout;
     videoEl.addEventListener('seeking', () => {
+        resumeAudio();
         clearTimeout(seekTimeout);
         videoEl.pause();
         seekTimeout = setTimeout(() => {
-            if (videoEl.readyState >= 3) {
-                videoEl.play().catch(()=>{});
-            }
+            if (videoEl.readyState >= 3) videoEl.play().catch(()=>{});
         }, 200);
     });
+
+    // Play / Pause / Click resume audio
+    ['play','pause','click'].forEach(evt => videoEl.addEventListener(evt,resumeAudio));
 
     // ==========================
     // Landscape / Portrait Toggle
@@ -309,6 +318,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isLandscape = false;
     rotateBtn.addEventListener('click', async () => {
+        resumeAudio(); // Resume audio on rotate button tap
         const text = rotateBtn.querySelector('span');
         try {
             if (!isLandscape) {
@@ -328,13 +338,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ==========================
-    // Audio Unmute Button
+    // Manual Audio Boost Button (Professional Icon & 0.5s ramp)
     // ==========================
-    const unmuteBtn = document.createElement('button');
-    unmuteBtn.classList.add('plyr__control');
-    unmuteBtn.setAttribute('type', 'button');
-    unmuteBtn.setAttribute('aria-label', 'Audio Unmute');
-    Object.assign(unmuteBtn.style, {
+    const boostBtn = document.createElement('button');
+    boostBtn.classList.add('plyr__control');
+    boostBtn.setAttribute('type', 'button');
+    boostBtn.setAttribute('aria-label', 'Audio Boost');
+    Object.assign(boostBtn.style, {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -345,28 +355,38 @@ document.addEventListener('DOMContentLoaded', () => {
         padding: '5px 8px',
         marginLeft: '5px',
         outline: 'none',
-        WebkitTapHighlightColor: 'transparent'
+        WebkitTapHighlightColor: 'transparent',
+        textShadow: '0 0 5px #ff33aa, 0 0 10px #ff33aa',
+        transition: 'transform 0.3s ease'
     });
-    unmuteBtn.innerHTML = `
-        <i class="fas fa-volume-up" style="font-size:18px; color:#fff;"></i>
-        <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Unmute</span>
+    boostBtn.innerHTML = `
+        <i class="fas fa-volume-up" style="font-size:18px; color:#ff33aa;"></i>
+        <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Boost</span>
     `;
-    player.elements.controls.appendChild(unmuteBtn);
+    player.elements.controls.appendChild(boostBtn);
 
-    unmuteBtn.addEventListener('click', async () => {
-        setupAudioBoost();
-        await audioContext.resume();
-        player.muted = false;
-        if (player.paused) player.play();
-        unmuteBtn.style.opacity='0'; setTimeout(()=>unmuteBtn.remove(),250);
+    boostBtn.addEventListener('click', () => {
+        resumeAudio(); // ensure AAC/EAC3 works
+        if (gainNode) {
+            // Smooth gain ramp to 3x over 0.5s
+            gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+            gainNode.gain.setValueAtTime(gainNode.gain.value, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(3.0, audioContext.currentTime + 0.5);
+        }
+        boostBtn.style.transform = 'scale(1.2)';
+        setTimeout(() => boostBtn.style.opacity='0', 300);
+        setTimeout(() => boostBtn.remove(), 500);
     });
 
     // ==========================
-    // Autoplay fix for modern browsers
+    // Autoplay fix
     // ==========================
-    videoEl.addEventListener('click', async () => {
-        try { await videoEl.play(); } catch(e){ console.log(e); }
-    });
+    videoEl.addEventListener('click', resumeAudio);
+
+    // ==========================
+    // Start video at 2x speed
+    // ==========================
+    videoEl.playbackRate = 2.0;
 });
 </script>
 <!-- Footer -->
@@ -380,6 +400,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
+
+
+
+
+
+
 
 
 
