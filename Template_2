@@ -275,7 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ==========================
-    // Smooth seek recovery
+    // Smooth seek recovery (100ms)
     // ==========================
     let seekTimeout;
     videoEl.addEventListener('seeking', () => {
@@ -284,7 +284,7 @@ document.addEventListener('DOMContentLoaded', () => {
         videoEl.pause();
         seekTimeout = setTimeout(() => {
             if (videoEl.readyState >= 3) videoEl.play().catch(()=>{});
-        }, 200);
+        }, 100); // ✅ changed to 100ms
     });
 
     // Play / Pause / Click resume audio
