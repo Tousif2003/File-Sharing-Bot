@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta property="og:image" content="https://i.ibb.co/M8S0Zzj/live-streaming.png" itemprop="thumbnailUrl">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ heading }}</title>
+
+    <!-- Fonts & Icons -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway|Delius">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+
+    <!-- Plyr Video Player -->
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+
+    <style>
+        body {
+            font-family: sans-serif;
+            font-size: 16px;
+            margin: 0;
+            padding: 0;
+        }
+
+        marquee {
+            font-size: 22px;
+            color: black;
+            font-family: serif;
+        }
+
+        .set-container {
+            padding: 15px;
+        }
+
+        #player-container {
+            margin: 10px 0;
+        }
+
+        #info-box {
+            border: 1px solid #140cf0;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            word-wrap: break-word;
+        }
+
+        .stream-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .stream-options a {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 5px 10px;
+            border-radius: 6px;
+            background-color: #2D76FF;
+            color: #fff;
+            transition: all 0.3s;
+        }
+
+        .stream-options a:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 8px 12px;
+            margin-bottom: 20px;
+            border-radius: 6px;
+            background-color: #28a745;
+            color: #fff;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .download-btn:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        footer {
+            font-size: 12px;
+            color: #7b89a3;
+            padding: 20px 10px 0 10px;
+            border-top: 1px solid #c2cee3;
+            text-align: center;
+        }
+
+        footer a {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="set-container">
+
+    <!-- Marquee Header -->
+    <header>
+        <marquee bgcolor="#808080">
+            <div id="file-name">{{ file_name }}</div>
+        </marquee>
+    </header>
+
+    <!-- Video Player -->
+    <div id="player-container">
+        <video id="player" playsinline preload="metadata" controlsList="nodownload" aria-label="Video player">
+            <source src="{{ src }}" type="video/mp4">
+            <p>Your browser does not support the video tag. Please <a href="{{ src }}" download>download the video</a> instead.</p>
+        </video>
+    </div>
+
+    <!-- Stream Options -->
+<p class="fancy-text">ꜱᴛʀᴇᴀᴍ ᴏᴘᴛɪᴏɴꜱ</p>
+
+<style>
+.fancy-text {
+  font-weight: bold;
+  font-size: 1rem;
+  color: #ff66cc; /* pink */
+}
+</style>
+<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+
+    <!-- VLC -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/GtnGhBV/videolan-vlc-logo-icon-170258.png" alt="VLC" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- XPlayer -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=video.player.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=video.player.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/pByqt2ZK/x.png" alt="XPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- KMPlayer -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.kmplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.kmplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/bjPYQjkZ/x.png" alt="KMPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- Playit -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.playit.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.playit.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/JsDNHgz/c0C4vnAa.png" alt="Playit" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+</div>
+
+<!-- Download Button -->
+<a href="{{ src }}" download
+   style="display: flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; background-color: #2D76FF; color: #fff; border-radius: 12px; padding: 15px; margin-top: 15px; font-weight: bold; font-size: 18px; box-shadow: 0 0 15px #2d76ff; transition: all 0.3s;">
+    <i class="fas fa-download" style="font-size: 20px;"></i> Download Now
+</a>
+
+<style>
+/* Pop & Bounce effect */
+@keyframes popBounce {
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1.1); }
+  70% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+/* Base style for all buttons: visible but scaled down initially */
+.stream-options a,
+.card.card-body {
+  transform: scale(0.8); /* start smaller */
+  animation: popBounce 0.6s ease forwards;
+  animation-fill-mode: forwards;
+}
+
+/* Sequential animation: initial wait 1s, then each button 0.5s after previous */
+.stream-options a:nth-child(1),
+.card.card-body:nth-child(1) { animation-delay: 1s; }
+.stream-options a:nth-child(2),
+.card.card-body:nth-child(2) { animation-delay: 1.5s; }
+.stream-options a:nth-child(3),
+.card.card-body:nth-child(3) { animation-delay: 2s; }
+.stream-options a:nth-child(4),
+.card.card-body:nth-child(4) { animation-delay: 2.5s; }
+.stream-options a:nth-child(5),
+.card.card-body:nth-child(5) { animation-delay: 3s; }
+.stream-options a:nth-child(6),
+.card.card-body:nth-child(6) { animation-delay: 3.5s; }
+
+/* Remove old fade/slide effects */
+.fadeInLeft, .fadeInRight, .shakeX {
+  animation-name: none !important;
+}
+</style>
+
+    <!-- Info Box -->
+    <div id="info-box">
+        <p style="font-size: 15px; color:#120e0e;">
+            <span style="color:#ff0000;"><u><b>𝐍𝐨𝐭𝐞</b></u></span> : ɪꜰ ʏᴏᴜ ꜰɪɴᴅ ᴀɴʏ ʙʀᴏᴋᴇɴ ʟɪɴᴋ ᴛʜᴇɴ ᴘʟᴇᴀsᴇ ʀᴇᴘᴏʀᴛ ᴛᴏ ᴍʏ 
+            <a href="https://telegram.me/FilmymodOwner_Bot" style="color: blue"><b>sᴜᴘᴘᴏʀᴛ ᴛᴇᴀᴍ</b></a>
+        </p>
+    </div>
+
+    <!-- Main Updates -->
+    <div class="mainupdates" style="text-align:center; margin-top:20px;">
+        <div style="margin-bottom: 10px;">𝐉𝐨𝐢𝐧 𝐎𝐮𝐫 𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐅𝐨𝐫 𝐌𝐨𝐫𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 💖</div>
+        <a href="https://telegram.me/FilmyMod123">
+            <img src="https://img.shields.io/badge/Updates- Channel -blueviolet?style=for-the-badge" alt="Channel">
+        </a>
+    </div>
+
+</div>
+
+<!-- ✅ Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<style>
+/* Remove blue highlight on tap/click */
+.plyr__control:focus {
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const videoEl = document.querySelector('#player');
+    videoEl.setAttribute('preload', 'auto');
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('crossorigin', 'anonymous');
+
+    // 🎥 Initialize Plyr
+    const player = new Plyr(videoEl, {
+        controls: [
+            'play-large',
+            'rewind',
+            'play',
+            'fast-forward',
+            'progress',
+            'current-time',
+            'duration'
+        ]
+    });
+
+    // 🔊 Audio Booster (safe)
+    let audioContext, gainNode;
+    function setupAudioBoost() {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaElementSource(videoEl);
+            gainNode = audioContext.createGain();
+            gainNode.gain.value = 3.0; // 3x louder
+            source.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+        }
+    }
+
+    // ==========================
+    // Smooth seek recovery
+    // ==========================
+    let seekTimeout;
+    videoEl.addEventListener('seeking', () => {
+        clearTimeout(seekTimeout);
+        videoEl.pause();
+        seekTimeout = setTimeout(() => {
+            if (videoEl.readyState >= 3) {
+                videoEl.play().catch(()=>{});
+            }
+        }, 200);
+    });
+
+    // ==========================
+    // Landscape / Portrait Toggle
+    // ==========================
+    const rotateBtn = document.createElement('button');
+    rotateBtn.classList.add('plyr__control');
+    rotateBtn.setAttribute('type', 'button');
+    rotateBtn.setAttribute('aria-label', 'Toggle Landscape');
+    Object.assign(rotateBtn.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '12px',
+        color: '#fff',
+        cursor: 'pointer',
+        padding: '5px 8px',
+        marginLeft: '5px',
+        outline: 'none',
+        WebkitTapHighlightColor: 'transparent'
+    });
+    rotateBtn.innerHTML = `
+        <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
+        <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
+    `;
+    player.elements.controls.appendChild(rotateBtn);
+
+    let isLandscape = false;
+    rotateBtn.addEventListener('click', async () => {
+        const text = rotateBtn.querySelector('span');
+        try {
+            if (!isLandscape) {
+                await player.fullscreen.enter();
+                if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+                text.innerText = 'Portrait';
+                text.style.color = '#ff9933';
+                isLandscape = true;
+            } else {
+                if (document.fullscreenElement) await player.fullscreen.exit();
+                if (screen.orientation?.unlock) screen.orientation.unlock();
+                text.innerText = 'Landscape';
+                text.style.color = '#00ffcc';
+                isLandscape = false;
+            }
+        } catch(e){console.log(e);}
+    });
+
+    // ==========================
+    // Audio Unmute Button
+    // ==========================
+    const unmuteBtn = document.createElement('button');
+    unmuteBtn.classList.add('plyr__control');
+    unmuteBtn.setAttribute('type', 'button');
+    unmuteBtn.setAttribute('aria-label', 'Audio Unmute');
+    Object.assign(unmuteBtn.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '12px',
+        color: '#fff',
+        cursor: 'pointer',
+        padding: '5px 8px',
+        marginLeft: '5px',
+        outline: 'none',
+        WebkitTapHighlightColor: 'transparent'
+    });
+    unmuteBtn.innerHTML = `
+        <i class="fas fa-volume-up" style="font-size:18px; color:#fff;"></i>
+        <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Unmute</span>
+    `;
+    player.elements.controls.appendChild(unmuteBtn);
+
+    unmuteBtn.addEventListener('click', async () => {
+        setupAudioBoost();
+        await audioContext.resume();
+        player.muted = false;
+        if (player.paused) player.play();
+        unmuteBtn.style.opacity='0'; setTimeout(()=>unmuteBtn.remove(),250);
+    });
+
+    // ==========================
+    // Autoplay fix for modern browsers
+    // ==========================
+    videoEl.addEventListener('click', async () => {
+        try { await videoEl.play(); } catch(e){ console.log(e); }
+    });
+});
+</script>
+<!-- Footer -->
+<footer>
+    <p>
+        This website only provides a service to play videos online without downloading. It does not offer storage or dissemination functions. You can report videos that contain copyright issues, explicit content, 18+, violence, etc. 
+        <a href="https://telegram.me/FilmymodOwner_Bot">Report</a>
+    </p>
+    <p><b>&copy; Copyright 2025<br>All Rights Reserved</b></p>
+</footer>
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+
