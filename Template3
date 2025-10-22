@@ -419,7 +419,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // =================================================
   // 🚀 Autoplay + Resume Audio
   // =================================================
-  videoEl.playbackRate = 2.0; // ✅ Start video at 2x speed
+  videoEl.playbackRate = 1.0;
   ['play','pause','click','seeked'].forEach(evt => 
     videoEl.addEventListener(evt,resumeAudio)
   );
