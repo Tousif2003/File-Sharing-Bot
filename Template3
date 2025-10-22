@@ -268,76 +268,91 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // =================================================
-  // ⚡ Smart Initial MKV Preload + Adaptive Prefetch
+  // ⚡ Smart MKV Prefetch + Adaptive Buffer System
   // =================================================
-  async function adaptivePreload() {
+  async function smartMKVPrefetch() {
     try {
       const src = videoEl.currentSrc || videoEl.src;
-      if (!src || !src.endsWith('.mkv')) return;
+      if (!src.endsWith('.mkv')) return;
 
-      // Initial preload 5 MB for fast start
+      // Initial Prefetch — load 8 MB before playback
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 4000);
+      setTimeout(() => controller.abort(), 5000);
       const res = await fetch(src, {
-        headers: { Range: 'bytes=0-5242879' },
+        headers: { Range: 'bytes=0-8388607' },
         signal: controller.signal
       });
-      if (res.ok) console.log('✅ Initial MKV Prefetch (5MB)');
+      if (res.ok) console.log('✅ Initial MKV Prefetch (8MB)');
     } catch (e) {
-      console.log('ℹ️ Initial prefetch skipped:', e.message);
+      console.log('ℹ️ MKV Prefetch skipped:', e.message);
     }
   }
-  adaptivePreload();
+  smartMKVPrefetch();
 
-  // ===============================================
-  // 🧠 Smart Range Prefetch on Long Seek (Adaptive)
-  // ===============================================
+  // =================================================
+  // 🚀 MKV Smart Long-Seek Optimizer (VLC-like logic)
+  // =================================================
   let lastSeek = 0;
+  let isPrefetching = false;
   videoEl.addEventListener('seeking', async () => {
     resumeAudio();
+
     const currentTime = videoEl.currentTime;
-    const diff = Math.abs(currentTime - lastSeek);
+    const jumpDiff = Math.abs(currentTime - lastSeek);
     lastSeek = currentTime;
 
-    if (diff > 10 && videoEl.currentSrc.endsWith('.mkv')) {
-      // Long seek detected (>10s jump)
-      const src = videoEl.currentSrc;
-      const bitrateEstimate = 900000; // ~0.9MB per second
-      const startByte = Math.floor(currentTime * bitrateEstimate);
+    if (!videoEl.currentSrc.endsWith('.mkv')) return;
+    if (isPrefetching) return;
+    if (jumpDiff < 8) return; // small seek ignore
 
-      // For large files, increase prefetch range up to 12 MB
-      const prefetchSize = currentTime > 1800 ? 12 * 1024 * 1024 : 6 * 1024 * 1024;
-      const endByte = startByte + prefetchSize;
+    isPrefetching = true;
 
-      try {
-        const controller = new AbortController();
-        setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(src, {
-          headers: { Range: `bytes=${startByte}-${endByte}` },
-          signal: controller.signal
-        });
-        if (res.ok) console.log(`🔹 Prefetched ${(prefetchSize/1024/1024).toFixed(1)}MB for seek`);
-      } catch (e) {
-        console.log('⚠️ MKV seek prefetch skipped:', e.message);
-      }
+    const src = videoEl.currentSrc;
+    const bitrateEstimate = 1.2 * 1024 * 1024; // ~1.2MB/sec bitrate estimate
+    const startByte = Math.max(0, Math.floor(currentTime * bitrateEstimate));
+    const prefetchSize = currentTime > 1800 ? 16 * 1024 * 1024 : 8 * 1024 * 1024;
+    const endByte = startByte + prefetchSize;
+
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(src, {
+        headers: { Range: `bytes=${startByte}-${endByte}` },
+        signal: controller.signal
+      });
+      if (res.ok) console.log(`🎯 MKV Prefetched ${Math.round(prefetchSize/1048576)}MB @${Math.round(startByte/1048576)}MB`);
+    } catch (e) {
+      console.log('⚠️ MKV seek prefetch failed:', e.message);
     }
+
+    setTimeout(() => (isPrefetching = false), 800);
   });
 
-  // ===============================================
-  // 🧩 Smooth Seek Recovery (100ms delay)
-  // ===============================================
+  // =================================================
+  // 🧠 Intelligent Resume & Buffer Stabilization
+  // =================================================
   let seekTimeout;
   videoEl.addEventListener('seeking', () => {
     clearTimeout(seekTimeout);
     videoEl.pause();
     seekTimeout = setTimeout(() => {
-      if (videoEl.readyState >= 3) videoEl.play().catch(()=>{});
-    }, 100);
+      if (videoEl.readyState >= 3) {
+        videoEl.play().catch(()=>{});
+      } else {
+        const resumeCheck = setInterval(() => {
+          if (videoEl.readyState >= 3) {
+            clearInterval(resumeCheck);
+            videoEl.play().catch(()=>{});
+          }
+        }, 150);
+        setTimeout(() => clearInterval(resumeCheck), 4000);
+      }
+    }, 120);
   });
 
-  // ===============================================
+  // =================================================
   // 🧭 Landscape Toggle Button
-  // ===============================================
+  // =================================================
   const rotateBtn = document.createElement('button');
   rotateBtn.classList.add('plyr__control');
   rotateBtn.type = 'button';
@@ -373,9 +388,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) { console.log(e); }
   });
 
-  // ===============================================
+  // =================================================
   // 🔊 Audio Boost Button
-  // ===============================================
+  // =================================================
   const boostBtn = document.createElement('button');
   boostBtn.classList.add('plyr__control');
   Object.assign(boostBtn.style,{
@@ -398,12 +413,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     boostBtn.style.transform = 'scale(1.2)';
     setTimeout(() => boostBtn.style.opacity = '0', 300);
-    setTimeout(() => boostBtn.remove(), 500);
+    setTimeout(() => boostBtn.remove(), 600);
   });
 
-  // ===============================================
+  // =================================================
   // 🚀 Autoplay + Resume Audio
-  // ===============================================
+  // =================================================
   videoEl.playbackRate = 1.0;
   ['play','pause','click','seeked'].forEach(evt => 
     videoEl.addEventListener(evt,resumeAudio)
@@ -421,4 +436,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
+
 
