@@ -240,21 +240,22 @@ document.addEventListener('DOMContentLoaded', () => {
   videoEl.setAttribute('playsinline', '');
   videoEl.setAttribute('crossorigin', 'anonymous');
 
-  // 🎥 Initialize Plyr
+  // 🎬 Initialize Plyr UI
   const player = new Plyr(videoEl, {
     controls: [
       'play-large','rewind','play','fast-forward','progress','current-time','duration'
     ]
   });
 
-  // 🔊 AudioContext Setup
+  // ============================
+  // 🔊 Audio Context + Boost
+  // ============================
   let audioContext, gainNode;
   function setupAudioContext() {
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContext.createMediaElementSource(videoEl);
       gainNode = audioContext.createGain();
-      gainNode.gain.value = 1.0;
       source.connect(gainNode);
       gainNode.connect(audioContext.destination);
     }
@@ -266,32 +267,67 @@ document.addEventListener('DOMContentLoaded', () => {
     if (audioContext) audioContext.resume().catch(()=>{});
   }
 
-  // ==========================
-  // Smart MKV Preload (5 MB)
-  // ==========================
-  async function smartPreload() {
+  // =================================================
+  // ⚡ Smart Initial MKV Preload + Adaptive Prefetch
+  // =================================================
+  async function adaptivePreload() {
     try {
       const src = videoEl.currentSrc || videoEl.src;
-      if (!src || !src.endsWith('.mkv')) return; // only for MKV
+      if (!src || !src.endsWith('.mkv')) return;
+
+      // Initial preload 5 MB for fast start
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000); // cancel after 5s
+      setTimeout(() => controller.abort(), 4000);
       const res = await fetch(src, {
-        headers: { Range: 'bytes=0-5242879' }, // first 5 MB
+        headers: { Range: 'bytes=0-5242879' },
         signal: controller.signal
       });
-      if (res.ok) console.log('✅ Smart MKV Prefetch Complete (5 MB)');
+      if (res.ok) console.log('✅ Initial MKV Prefetch (5MB)');
     } catch (e) {
-      console.log('ℹ️ MKV Prefetch skipped:', e.message);
+      console.log('ℹ️ Initial prefetch skipped:', e.message);
     }
   }
-  smartPreload();
+  adaptivePreload();
 
-  // ==========================
-  // Smooth seek recovery (100 ms)
-  // ==========================
+  // ===============================================
+  // 🧠 Smart Range Prefetch on Long Seek (Adaptive)
+  // ===============================================
+  let lastSeek = 0;
+  videoEl.addEventListener('seeking', async () => {
+    resumeAudio();
+    const currentTime = videoEl.currentTime;
+    const diff = Math.abs(currentTime - lastSeek);
+    lastSeek = currentTime;
+
+    if (diff > 10 && videoEl.currentSrc.endsWith('.mkv')) {
+      // Long seek detected (>10s jump)
+      const src = videoEl.currentSrc;
+      const bitrateEstimate = 900000; // ~0.9MB per second
+      const startByte = Math.floor(currentTime * bitrateEstimate);
+
+      // For large files, increase prefetch range up to 12 MB
+      const prefetchSize = currentTime > 1800 ? 12 * 1024 * 1024 : 6 * 1024 * 1024;
+      const endByte = startByte + prefetchSize;
+
+      try {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(src, {
+          headers: { Range: `bytes=${startByte}-${endByte}` },
+          signal: controller.signal
+        });
+        if (res.ok) console.log(`🔹 Prefetched ${(prefetchSize/1024/1024).toFixed(1)}MB for seek`);
+      } catch (e) {
+        console.log('⚠️ MKV seek prefetch skipped:', e.message);
+      }
+    }
+  });
+
+  // ===============================================
+  // 🧩 Smooth Seek Recovery (100ms delay)
+  // ===============================================
   let seekTimeout;
   videoEl.addEventListener('seeking', () => {
-    resumeAudio();
     clearTimeout(seekTimeout);
     videoEl.pause();
     seekTimeout = setTimeout(() => {
@@ -299,18 +335,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 100);
   });
 
-  // Resume audio on all interactions
-  ['play','pause','click','seeked'].forEach(evt => 
-    videoEl.addEventListener(evt,resumeAudio)
-  );
-
-  // ==========================
-  // Landscape Toggle Button
-  // ==========================
+  // ===============================================
+  // 🧭 Landscape Toggle Button
+  // ===============================================
   const rotateBtn = document.createElement('button');
   rotateBtn.classList.add('plyr__control');
   rotateBtn.type = 'button';
-  rotateBtn.ariaLabel = 'Toggle Landscape';
   Object.assign(rotateBtn.style, {
     display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
     fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'5px',
@@ -322,62 +352,62 @@ document.addEventListener('DOMContentLoaded', () => {
   `;
   player.elements.controls.appendChild(rotateBtn);
 
-  let isLandscape=false;
-  rotateBtn.addEventListener('click', async()=>{
+  let isLandscape = false;
+  rotateBtn.addEventListener('click', async () => {
     resumeAudio();
-    const text=rotateBtn.querySelector('span');
-    try{
-      if(!isLandscape){
+    const label = rotateBtn.querySelector('span');
+    try {
+      if (!isLandscape) {
         await player.fullscreen.enter();
-        if(screen.orientation?.lock) await screen.orientation.lock('landscape');
-        text.innerText='Portrait';
-        text.style.color='#ff9933';
-        isLandscape=true;
+        if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+        label.innerText = 'Portrait';
+        label.style.color = '#ff9933';
+        isLandscape = true;
       } else {
-        if(document.fullscreenElement) await player.fullscreen.exit();
-        if(screen.orientation?.unlock) screen.orientation.unlock();
-        text.innerText='Landscape';
-        text.style.color='#00ffcc';
-        isLandscape=false;
+        if (document.fullscreenElement) await player.fullscreen.exit();
+        if (screen.orientation?.unlock) screen.orientation.unlock();
+        label.innerText = 'Landscape';
+        label.style.color = '#00ffcc';
+        isLandscape = false;
       }
-    }catch(e){console.log(e);}
+    } catch (e) { console.log(e); }
   });
 
-  // ==========================
-  // Audio Boost Button
-  // ==========================
-  const boostBtn=document.createElement('button');
+  // ===============================================
+  // 🔊 Audio Boost Button
+  // ===============================================
+  const boostBtn = document.createElement('button');
   boostBtn.classList.add('plyr__control');
-  boostBtn.type='button';
-  boostBtn.ariaLabel='Audio Boost';
   Object.assign(boostBtn.style,{
     display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
     fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'5px',
     textShadow:'0 0 5px #ff33aa,0 0 10px #ff33aa',transition:'transform .3s ease'
   });
-  boostBtn.innerHTML=`
+  boostBtn.innerHTML = `
     <i class="fas fa-volume-up" style="font-size:18px; color:#ff33aa;"></i>
     <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Boost</span>
   `;
   player.elements.controls.appendChild(boostBtn);
 
-  boostBtn.addEventListener('click',()=>{
+  boostBtn.addEventListener('click', () => {
     resumeAudio();
-    if(gainNode){
+    if (gainNode) {
       gainNode.gain.cancelScheduledValues(audioContext.currentTime);
-      gainNode.gain.setValueAtTime(gainNode.gain.value,audioContext.currentTime);
-      gainNode.gain.linearRampToValueAtTime(3.0,audioContext.currentTime+0.5);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, audioContext.currentTime);
+      gainNode.gain.linearRampToValueAtTime(3.0, audioContext.currentTime + 0.5);
     }
-    boostBtn.style.transform='scale(1.2)';
-    setTimeout(()=>boostBtn.style.opacity='0',300);
-    setTimeout(()=>boostBtn.remove(),500);
+    boostBtn.style.transform = 'scale(1.2)';
+    setTimeout(() => boostBtn.style.opacity = '0', 300);
+    setTimeout(() => boostBtn.remove(), 500);
   });
 
-  // ==========================
-  // Autoplay + Speed
-  // ==========================
-  videoEl.playbackRate = 2.0;
-  videoEl.addEventListener('click',resumeAudio);
+  // ===============================================
+  // 🚀 Autoplay + Resume Audio
+  // ===============================================
+  videoEl.playbackRate = 1.0;
+  ['play','pause','click','seeked'].forEach(evt => 
+    videoEl.addEventListener(evt,resumeAudio)
+  );
 });
 </script>
 <!-- Footer -->
@@ -391,3 +421,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
+
