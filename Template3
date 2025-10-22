@@ -256,6 +256,10 @@ document.addEventListener('DOMContentLoaded', () => {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContext.createMediaElementSource(videoEl);
       gainNode = audioContext.createGain();
+
+      // ✅ Start with boosted audio (2x loudness)
+      gainNode.gain.value = 2.0;
+
       source.connect(gainNode);
       gainNode.connect(audioContext.destination);
     }
@@ -265,6 +269,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function resumeAudio() {
     setupAudioContext();
     if (audioContext) audioContext.resume().catch(()=>{});
+    // ✅ Force playback to always stay at 1x speed
+    videoEl.playbackRate = 1.0;
   }
 
   // =================================================
@@ -419,7 +425,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // =================================================
   // 🚀 Autoplay + Resume Audio
   // =================================================
-  videoEl.playbackRate = 1.0;
+  videoEl.playbackRate = 1.0; 
   ['play','pause','click','seeked'].forEach(evt => 
     videoEl.addEventListener(evt,resumeAudio)
   );
