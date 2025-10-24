@@ -227,166 +227,208 @@
 <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
 
 <style>
-/* Remove blue highlight on tap/click */
 .plyr__control:focus {
-    outline: none;
-    -webkit-tap-highlight-color: transparent;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 </style>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    const videoEl = document.querySelector('#player');
-    videoEl.setAttribute('preload', 'auto');
-    videoEl.setAttribute('playsinline', '');
-    videoEl.setAttribute('crossorigin', 'anonymous');
+  const videoEl = document.querySelector('#player');
+  videoEl.setAttribute('preload', 'auto');
+  videoEl.setAttribute('playsinline', '');
+  videoEl.setAttribute('crossorigin', 'anonymous');
 
-    // 🎥 Initialize Plyr
-    const player = new Plyr(videoEl, {
-        controls: [
-            'play-large',
-            'rewind',
-            'play',
-            'fast-forward',
-            'progress',
-            'current-time',
-            'duration'
-        ]
-    });
+  // 🎬 Initialize Plyr UI
+  const player = new Plyr(videoEl, {
+    controls: [
+      'play-large','rewind','play','fast-forward','progress','current-time','duration'
+    ]
+  });
 
-    // 🔊 Audio Boost / AAC-EAC3 fix
-    let audioContext, gainNode;
-    function setupAudioContext() {
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioContext.createMediaElementSource(videoEl);
-            gainNode = audioContext.createGain();
-            gainNode.gain.value = 1.0; // normal volume initially
-            source.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-        }
-        audioContext.resume().catch(()=>{});
+  // ============================
+  // 🔊 Audio Context + Boost
+  // ============================
+  let audioContext, gainNode;
+  function setupAudioContext() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaElementSource(videoEl);
+      gainNode = audioContext.createGain();
+
+      // ✅ Start with boosted audio (2x loudness)
+      gainNode.gain.value = 2.0;
+
+      source.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+    }
+    audioContext.resume().catch(()=>{});
+  }
+
+  function resumeAudio() {
+    setupAudioContext();
+    if (audioContext) audioContext.resume().catch(()=>{});
+    // ✅ Force playback to always stay at 1x speed
+    videoEl.playbackRate = 1.0;
+  }
+
+  // =================================================
+  // ⚡ Smart MKV Prefetch + Adaptive Buffer System
+  // =================================================
+  async function smartMKVPrefetch() {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (!src.endsWith('.mkv')) return;
+
+      // Initial Prefetch — load 8 MB before playback
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(src, {
+        headers: { Range: 'bytes=0-8388607' },
+        signal: controller.signal
+      });
+      if (res.ok) console.log('✅ Initial MKV Prefetch (8MB)');
+    } catch (e) {
+      console.log('ℹ️ MKV Prefetch skipped:', e.message);
+    }
+  }
+  smartMKVPrefetch();
+
+  // =================================================
+  // 🚀 MKV Smart Long-Seek Optimizer (VLC-like logic)
+  // =================================================
+  let lastSeek = 0;
+  let isPrefetching = false;
+  videoEl.addEventListener('seeking', async () => {
+    resumeAudio();
+
+    const currentTime = videoEl.currentTime;
+    const jumpDiff = Math.abs(currentTime - lastSeek);
+    lastSeek = currentTime;
+
+    if (!videoEl.currentSrc.endsWith('.mkv')) return;
+    if (isPrefetching) return;
+    if (jumpDiff < 8) return; // small seek ignore
+
+    isPrefetching = true;
+
+    const src = videoEl.currentSrc;
+    const bitrateEstimate = 1.2 * 1024 * 1024; // ~1.2MB/sec bitrate estimate
+    const startByte = Math.max(0, Math.floor(currentTime * bitrateEstimate));
+    const prefetchSize = currentTime > 1800 ? 16 * 1024 * 1024 : 8 * 1024 * 1024;
+    const endByte = startByte + prefetchSize;
+
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(src, {
+        headers: { Range: `bytes=${startByte}-${endByte}` },
+        signal: controller.signal
+      });
+      if (res.ok) console.log(`🎯 MKV Prefetched ${Math.round(prefetchSize/1048576)}MB @${Math.round(startByte/1048576)}MB`);
+    } catch (e) {
+      console.log('⚠️ MKV seek prefetch failed:', e.message);
     }
 
-    // Resume AudioContext on any interaction
-    function resumeAudio() {
-        setupAudioContext();
-        if (audioContext) audioContext.resume().catch(()=>{});
+    setTimeout(() => (isPrefetching = false), 800);
+  });
+
+  // =================================================
+  // 🧠 Intelligent Resume & Buffer Stabilization
+  // =================================================
+  let seekTimeout;
+  videoEl.addEventListener('seeking', () => {
+    clearTimeout(seekTimeout);
+    videoEl.pause();
+    seekTimeout = setTimeout(() => {
+      if (videoEl.readyState >= 3) {
+        videoEl.play().catch(()=>{});
+      } else {
+        const resumeCheck = setInterval(() => {
+          if (videoEl.readyState >= 3) {
+            clearInterval(resumeCheck);
+            videoEl.play().catch(()=>{});
+          }
+        }, 150);
+        setTimeout(() => clearInterval(resumeCheck), 4000);
+      }
+    }, 120);
+  });
+
+  // =================================================
+  // 🧭 Landscape Toggle Button
+  // =================================================
+  const rotateBtn = document.createElement('button');
+  rotateBtn.classList.add('plyr__control');
+  rotateBtn.type = 'button';
+  Object.assign(rotateBtn.style, {
+    display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+    fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'5px',
+    WebkitTapHighlightColor:'transparent'
+  });
+  rotateBtn.innerHTML = `
+    <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
+    <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
+  `;
+  player.elements.controls.appendChild(rotateBtn);
+
+  let isLandscape = false;
+  rotateBtn.addEventListener('click', async () => {
+    resumeAudio();
+    const label = rotateBtn.querySelector('span');
+    try {
+      if (!isLandscape) {
+        await player.fullscreen.enter();
+        if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+        label.innerText = 'Portrait';
+        label.style.color = '#ff9933';
+        isLandscape = true;
+      } else {
+        if (document.fullscreenElement) await player.fullscreen.exit();
+        if (screen.orientation?.unlock) screen.orientation.unlock();
+        label.innerText = 'Landscape';
+        label.style.color = '#00ffcc';
+        isLandscape = false;
+      }
+    } catch (e) { console.log(e); }
+  });
+
+  // =================================================
+  // 🔊 Audio Boost Button
+  // =================================================
+  const boostBtn = document.createElement('button');
+  boostBtn.classList.add('plyr__control');
+  Object.assign(boostBtn.style,{
+    display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+    fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'5px',
+    textShadow:'0 0 5px #ff33aa,0 0 10px #ff33aa',transition:'transform .3s ease'
+  });
+  boostBtn.innerHTML = `
+    <i class="fas fa-volume-up" style="font-size:18px; color:#ff33aa;"></i>
+    <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Boost</span>
+  `;
+  player.elements.controls.appendChild(boostBtn);
+
+  boostBtn.addEventListener('click', () => {
+    resumeAudio();
+    if (gainNode) {
+      gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, audioContext.currentTime);
+      gainNode.gain.linearRampToValueAtTime(3.0, audioContext.currentTime + 0.5);
     }
+    boostBtn.style.transform = 'scale(1.2)';
+    setTimeout(() => boostBtn.style.opacity = '0', 300);
+    setTimeout(() => boostBtn.remove(), 600);
+  });
 
-    // ==========================
-    // Smooth seek recovery (100ms)
-    // ==========================
-    let seekTimeout;
-    videoEl.addEventListener('seeking', () => {
-        resumeAudio();
-        clearTimeout(seekTimeout);
-        videoEl.pause();
-        seekTimeout = setTimeout(() => {
-            if (videoEl.readyState >= 3) videoEl.play().catch(()=>{});
-        }, 100); // ✅ changed to 100ms
-    });
-
-    // Play / Pause / Click resume audio
-    ['play','pause','click'].forEach(evt => videoEl.addEventListener(evt,resumeAudio));
-
-    // ==========================
-    // Landscape / Portrait Toggle
-    // ==========================
-    const rotateBtn = document.createElement('button');
-    rotateBtn.classList.add('plyr__control');
-    rotateBtn.setAttribute('type', 'button');
-    rotateBtn.setAttribute('aria-label', 'Toggle Landscape');
-    Object.assign(rotateBtn.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '12px',
-        color: '#fff',
-        cursor: 'pointer',
-        padding: '5px 8px',
-        marginLeft: '5px',
-        outline: 'none',
-        WebkitTapHighlightColor: 'transparent'
-    });
-    rotateBtn.innerHTML = `
-        <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
-        <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
-    `;
-    player.elements.controls.appendChild(rotateBtn);
-
-    let isLandscape = false;
-    rotateBtn.addEventListener('click', async () => {
-        resumeAudio(); // Resume audio on rotate button tap
-        const text = rotateBtn.querySelector('span');
-        try {
-            if (!isLandscape) {
-                await player.fullscreen.enter();
-                if (screen.orientation?.lock) await screen.orientation.lock('landscape');
-                text.innerText = 'Portrait';
-                text.style.color = '#ff9933';
-                isLandscape = true;
-            } else {
-                if (document.fullscreenElement) await player.fullscreen.exit();
-                if (screen.orientation?.unlock) screen.orientation.unlock();
-                text.innerText = 'Landscape';
-                text.style.color = '#00ffcc';
-                isLandscape = false;
-            }
-        } catch(e){console.log(e);}
-    });
-
-    // ==========================
-    // Manual Audio Boost Button (Professional Icon & 0.5s ramp)
-    // ==========================
-    const boostBtn = document.createElement('button');
-    boostBtn.classList.add('plyr__control');
-    boostBtn.setAttribute('type', 'button');
-    boostBtn.setAttribute('aria-label', 'Audio Boost');
-    Object.assign(boostBtn.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '12px',
-        color: '#fff',
-        cursor: 'pointer',
-        padding: '5px 8px',
-        marginLeft: '5px',
-        outline: 'none',
-        WebkitTapHighlightColor: 'transparent',
-        textShadow: '0 0 5px #ff33aa, 0 0 10px #ff33aa',
-        transition: 'transform 0.3s ease'
-    });
-    boostBtn.innerHTML = `
-        <i class="fas fa-volume-up" style="font-size:18px; color:#ff33aa;"></i>
-        <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Boost</span>
-    `;
-    player.elements.controls.appendChild(boostBtn);
-
-    boostBtn.addEventListener('click', () => {
-        resumeAudio(); // ensure AAC/EAC3 works
-        if (gainNode) {
-            // Smooth gain ramp to 3x over 0.5s
-            gainNode.gain.cancelScheduledValues(audioContext.currentTime);
-            gainNode.gain.setValueAtTime(gainNode.gain.value, audioContext.currentTime);
-            gainNode.gain.linearRampToValueAtTime(3.0, audioContext.currentTime + 0.5);
-        }
-        boostBtn.style.transform = 'scale(1.2)';
-        setTimeout(() => boostBtn.style.opacity='0', 300);
-        setTimeout(() => boostBtn.remove(), 500);
-    });
-
-    // ==========================
-    // Autoplay fix
-    // ==========================
-    videoEl.addEventListener('click', resumeAudio);
-
-    // ==========================
-    // Start video at 2x speed
-    // ==========================
-    videoEl.playbackRate = 2.0;
+  // =================================================
+  // 🚀 Autoplay + Resume Audio
+  // =================================================
+  videoEl.playbackRate = 1.0; 
+  ['play','pause','click','seeked'].forEach(evt => 
+    videoEl.addEventListener(evt,resumeAudio)
+  );
 });
 </script>
 <!-- Footer -->
@@ -400,18 +442,3 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
