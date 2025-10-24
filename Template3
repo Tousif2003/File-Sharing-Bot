@@ -219,11 +219,6 @@
 
 </div>
 
-<!-- ===========================
-     ORIGINAL PLAYER + PLYR (UNCHANGED)
-     (keep this part as your original)
-   =========================== -->
-
 <!-- ✅ Font Awesome for icons -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 
@@ -273,8 +268,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const source = audioContext.createMediaElementSource(videoEl);
       gainNode = audioContext.createGain();
 
-      // ✅ Start with boosted audio (2x loudness)
-      gainNode.gain.value = 2.0;
+      // ✅ Start with boosted audio (3x loudness)
+      gainNode.gain.value = 3.0;
 
       source.connect(gainNode);
       gainNode.connect(audioContext.destination);
@@ -409,42 +404,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (e) { console.log(e); }
   });
-
-  // =================================================
-  // 🔊 Audio Boost Button
-  // =================================================
-  const boostBtn = document.createElement('button');
-  boostBtn.classList.add('plyr__control');
-  Object.assign(boostBtn.style,{
-    display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
-    fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'5px',
-    textShadow:'0 0 5px #ff33aa,0 0 10px #ff33aa',transition:'transform .3s ease'
-  });
-  boostBtn.innerHTML = `
-    <i class="fas fa-volume-up" style="font-size:18px; color:#ff33aa;"></i>
-    <span style="font-size:10px; color:#ff66cc; font-weight:bold;">Audio Boost</span>
-  `;
-  player.elements.controls.appendChild(boostBtn);
-
-  boostBtn.addEventListener('click', () => {
-    resumeAudio();
-    if (gainNode) {
-      gainNode.gain.cancelScheduledValues(audiocontext?.currentTime || 0);
-      gainNode.gain.setValueAtTime(gainNode.gain.value, audiocontext?.currentTime || 0);
-      gainNode.gain.linearRampToValueAtTime(3.0, (audiocontext?.currentTime || 0) + 0.5);
-    }
-    boostBtn.style.transform = 'scale(1.2)';
-    setTimeout(() => boostBtn.style.opacity = '0', 300);
-    setTimeout(() => boostBtn.remove(), 600);
-  });
-
-  // =================================================
-  // 🚀 Autoplay + Resume Audio
-  // =================================================
-  videoEl.playbackRate = 1.0;
-  ['play','pause','click','seeked'].forEach(evt =>
-    videoEl.addEventListener(evt,resumeAudio)
-  );
 
   /************************************************************************
    * ==========================
@@ -723,6 +682,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
+
+
+
+
+
 
 
 
