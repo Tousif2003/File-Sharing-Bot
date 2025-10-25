@@ -1,103 +1,164 @@
-  <!-- ✅ Font Awesome for icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<!-- ✅ Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 
-  <!-- ✅ Plyr CSS & JS -->
-  <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
-  <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
 
-  <!-- ✅ HLS & DASH (optional adaptive) -->
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+<!-- ✅ HLS & DASH (optional adaptive) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
 
-  <style>
-    /* user's original small focus tweak */
-    .plyr__control:focus {
-      outline: none;
-      -webkit-tap-highlight-color: transparent;
-    }
+<style>
+  /* user's original small focus tweak */
+  .plyr__control:focus {
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
 
-    /* small button fix: avoid overlay blocking bottom controls */
-    .plyr__controls {
-      position: relative;
-      z-index: 60 !important;            /* ensure controls sit above overlays */
-      pointer-events: auto !important;   /* accept pointer events */
-    }
+  /* --- sane stacking for Plyr controls (safe defaults) --- */
+  .plyr__controls {
+    position: relative;
+    z-index: 2 !important;            /* modest z-index so controls don't cover page elements */
+    pointer-events: auto !important;
+  }
 
-    .plyr__control--overlaid,
-    .plyr__play-large {
-      z-index: 10 !important;            /* keep big center button lower in stacking */
-      pointer-events: auto !important;
-    }
+  /* keep big play overlay visually on top of video but not covering controls */
+  .plyr__play-large {
+    z-index: 4 !important;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: auto !important;
+  }
 
-    @media (max-width: 640px) {
-      .plyr__play-large { transform: translateY(-6px) scale(0.95); }
-    }
+  /* slightly reduce overlay on very small screens */
+  @media (max-width: 640px) {
+    .plyr__play-large { transform: translate(-50%, -60%) scale(0.95); }
+  }
 
-    body { background:#000; color:#fff; margin:0; padding:20px; font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; display:flex; justify-content:center; }
-    .player-wrap { width:100%; max-width:980px; }
-    video { width:100%; border-radius:10px; display:block; }
-  </style>
-</head>
-<body>
-  <div class="player-wrap">
-    <!-- Replace src with your video or call playerAttach(url) -->
-    <video id="player" controls playsinline crossorigin preload="auto">
-      <source src="YOUR_VIDEO.mp4" type="video/mp4">
-    </video>
-  </div>
+  /* landscape custom button style (single class) */
+  .landscape-btn {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:2px;
+    padding:5px 8px;
+    border-radius:8px;
+    background: transparent;
+    color: #fff;
+    margin-left:6px;
+    border: none;
+    cursor: pointer;
+  }
+
+  /* page helper classes (won't conflict if your page has its own styles) */
+  .req-player-wrap { width:100%; max-width:980px; }
+  .req-player-video { width:100%; border-radius:10px; display:block; }
+
+  /* optional: make sure custom appended buttons don't inherit undesirable styles */
+  .plyr__controls .landscape-btn { font: inherit; }
+</style>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   /************************************************************************
-   * Final Player (original + advanced optimizations + sync fix)
+   * Integrated player block
+   * - This block assumes your page already has a <video id="player"> element.
+   * - It preserves the full original advanced logic (prefetch, MSE, sync)
+   *   and inserts defensive fixes:
+   *     • Plyr init guard (prevents duplicate initialization)
+   *     • sane CSS stacking (controls/play-large)
+   *     • idempotent manual play/pause + single landscape append
    ************************************************************************/
 
+  // Grab the video element that you already have on the page
   const videoEl = document.querySelector('#player');
-  videoEl.setAttribute('preload', 'auto');
-  videoEl.setAttribute('playsinline', '');
-  videoEl.setAttribute('crossorigin', 'anonymous');
+  if (!videoEl) {
+    console.warn('req-player: #player element not found on page — player script aborted.');
+    return;
+  }
 
-  // Controls limited as requested
+  // Defensive attributes (ensure expected behavior)
+  try {
+    videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('crossorigin', 'anonymous');
+  } catch(e){ /* ignore */ }
+
+  // Controls limited as requested (keeps UI minimal)
   const CONTROLS = [
     'play-large','rewind','play','fast-forward','progress','current-time','duration'
   ];
 
-  // Initialize Plyr with limited controls
-  const player = new Plyr(videoEl, { controls: CONTROLS });
+  /******************************************************
+   * Plyr init guard: destroy any previous instance so we
+   * don't end up with duplicated controls or event handlers
+   ******************************************************/
+  if (window.__reqPlyrInstance) {
+    try { window.__reqPlyrInstance.destroy(); } catch(e) { /* ignore */ }
+    window.__reqPlyrInstance = null;
+  }
+  window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
+  const player = window.__reqPlyrInstance;
 
   /*******************************
    * ============================
-   * ✅ Manual Play/Pause Button Fix
-   * (inserted exactly as you provided)
+   * ✅ Manual Play/Pause Button Fix (idempotent)
+   * Inserted into player.on('ready') with landscape append guard
    * ============================
    *******************************/
   player.on('ready', () => {
     try {
-      const controls = player.elements.controls;
+      const controls = player.elements && player.elements.controls;
       if (!controls) return;
 
-      // Fix play/pause toggle  
-      const playBtn = controls.querySelector('.plyr__control[data-plyr="play"]');  
-      if (playBtn) {  
-        playBtn.addEventListener('click', async (e) => {  
-          e.preventDefault();  
-          try {  
-            if (videoEl.paused) {  
-              await videoEl.play();  
-            } else {  
-              videoEl.pause();  
-            }  
-          } catch (err) {  
-            console.warn('Play/Pause toggle error:', err);  
-          }  
-        });  
-      }  
-
-      // Optional: if you have landscape button helper  
-      if (typeof createLandscapeButton === 'function') {  
-        const landscapeBtn = createLandscapeButton();  
-        controls.appendChild(landscapeBtn);  
+      // -------------------------
+      // Manual Play/Pause Button Fix (idempotent)
+      // -------------------------
+      const smallPlaySel = '.plyr__control[data-plyr="play"], .plyr__control--play';
+      const smallPlayBtn = controls.querySelector(smallPlaySel);
+      if (smallPlayBtn && !smallPlayBtn._manualPlayBound) {
+        smallPlayBtn._manualPlayBound = true;
+        const handler = async (e) => {
+          try { if (e && e.preventDefault) e.preventDefault(); } catch(_) {}
+          try {
+            // prefer Plyr API: keep internal state correct
+            if (player && typeof player.play === 'function' && typeof player.pause === 'function') {
+              if (player.playing) await player.pause();
+              else await player.play();
+              return;
+            }
+          } catch(err) {
+            console.warn('Plyr API toggle error (fallback to native):', err);
+          }
+          // fallback to native element
+          try {
+            if (videoEl.paused) await videoEl.play();
+            else videoEl.pause();
+          } catch(err) { console.warn('Native play/pause failed:', err); }
+        };
+        smallPlayBtn.addEventListener('click', handler, { passive: false });
+        smallPlayBtn.addEventListener('touchstart', handler, { passive: false });
       }
+
+      // -------------------------
+      // Append Landscape button only if not already appended
+      // -------------------------
+      if (typeof createLandscapeButton === 'function') {
+        if (!controls.querySelector('.landscape-btn')) {
+          const landscapeBtn = createLandscapeButton();
+          landscapeBtn.classList.add('landscape-btn');
+          controls.appendChild(landscapeBtn);
+        }
+      }
+
+      // Defensive: ensure controls container styling does not break layout
+      try {
+        controls.style.pointerEvents = 'auto';
+        if (!controls.style.zIndex) controls.style.zIndex = '2';
+      } catch(e){}
     } catch (e) {
       console.warn('Play button patch failed', e);
     }
@@ -214,16 +275,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   /********************************************************
-   * Landscape (custom) button only — appended once Plyr ready
+   * Landscape (custom) button only — function; appended in ready()
    ********************************************************/
   function createLandscapeButton() {
     const btn = document.createElement('button');
-    btn.className = 'plyr__control';
+    btn.className = 'plyr__control landscape-btn';
     btn.type = 'button';
     Object.assign(btn.style, {
       display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
       fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'6px',
-      WebkitTapHighlightColor:'transparent'
+      WebkitTapHighlightColor:'transparent', background:'transparent', border:'none'
     });
     btn.innerHTML = `
       <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
@@ -254,18 +315,14 @@ document.addEventListener('DOMContentLoaded', () => {
     return btn;
   }
 
-  player.on('ready', () => {
-    try {
-      const controls = player.elements.controls;
-      if (!controls) return;
-      // Append only the Landscape button (controls list already limited)
-      const landscapeBtn = createLandscapeButton();
-      controls.appendChild(landscapeBtn);
-    } catch(e){ console.warn('add landscape failed', e); }
-  });
-
   /************************************************************************
    * ADVANCED OPTIMIZATIONS (kept intact)
+   * - workers (prefetch + seek)
+   * - adaptive prefetch controller
+   * - smart retries
+   * - 100ms seek stabilizer
+   * - network estimator + background prefetch
+   * - MSE scaffold for MP4
    ************************************************************************/
 
   function bytesToMB(n){ return (n/1048576).toFixed(2); }
