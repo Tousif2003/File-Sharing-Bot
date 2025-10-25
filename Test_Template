@@ -32,16 +32,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // -------------------------
   // Controls configuration
   // -------------------------
-  // Full controls (default) includes rotate, boost, clean toggle
   const CONTROLS_FULL = [
     'play-large','rewind','play','fast-forward',
     'progress','current-time','duration',
   ];
 
-  // Add placeholders for custom buttons; we'll append them after Plyr ready
   const player = new Plyr(videoEl, { controls: CONTROLS_FULL });
 
-  // expose a function to toggle clean UI later if needed
   function cleanMode() {
     try {
       player.elements.controls.innerHTML = '';
@@ -49,20 +46,15 @@ document.addEventListener('DOMContentLoaded', () => {
       cleanList.forEach(id => {
         const el = document.createElement('div');
         el.className = 'plyr__control';
-        el.textContent = ''; // Plyr won't auto-render these, but keep minimal
+        el.textContent = '';
       });
-      // quick minimal fallback: restore default controls set smaller
       player.destroy();
       const p2 = new Plyr(videoEl, { controls: ['play-large','progress','current-time','fullscreen'] });
       return p2;
     } catch (e) { console.log('cleanMode failed', e); }
   }
 
-  // -------------------------
-  // HLS / DASH / MP4 fallback loader
-  // -------------------------
   async function attachSource(src) {
-    // simple heuristic: if .m3u8 -> use hls.js; else use video src directly (mp4/mkv)
     if (!src) return;
     if (src.endsWith('.m3u8') && Hls && Hls.isSupported()) {
       try {
@@ -73,7 +65,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       } catch (e) { console.warn('HLS attach failed', e); }
     }
-    // fallback: if dash.js and .mpd
     if (src.endsWith('.mpd') && dashjs) {
       try {
         const playerDash = dashjs.MediaPlayer().create();
@@ -82,7 +73,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       } catch (e) { console.warn('DASH attach failed', e); }
     }
-    // else set src directly (mp4/mkv)
     videoEl.src = src;
   }
 
@@ -96,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const source = audioContext.createMediaElementSource(videoEl);
         gainNode = audioContext.createGain();
-        gainNode.gain.value = 1.0; // default normal; UI sets boost
+        gainNode.gain.value = 1.0;
         source.connect(gainNode);
         gainNode.connect(audioContext.destination);
       } catch (e) {
@@ -106,7 +96,6 @@ document.addEventListener('DOMContentLoaded', () => {
     audioContext.resume().catch(()=>{});
   }
 
-  // resumeAudio: improved — hold audio until frame ready
   function resumeAudio() {
     setupAudioContext();
     if (audioContext && audioContext.state === 'suspended') {
@@ -114,14 +103,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     videoEl.playbackRate = 1.0;
 
-    // Hold audio until video has enough data to render frame
     let holdCount = 0;
     const check = setInterval(() => {
       holdCount++;
-      if (videoEl.readyState >= 3 || holdCount > 80) { // timeout ~4s
-        try {
-          videoEl.muted = false;
-        } catch (e) {}
+      if (videoEl.readyState >= 3 || holdCount > 80) {
+        try { videoEl.muted = false; } catch (e) {}
         clearInterval(check);
       } else {
         try { videoEl.muted = true; } catch (e) {}
@@ -129,7 +115,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 50);
   }
 
-  // Audio boost toggle UI
   function createBoostButton() {
     const btn = document.createElement('button');
     btn.className = 'plyr__control';
@@ -157,7 +142,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return btn;
   }
 
-  // Rotate / Landscape button
   function createRotateButton() {
     const btn = document.createElement('button');
     btn.className = 'plyr__control';
@@ -179,28 +163,80 @@ document.addEventListener('DOMContentLoaded', () => {
           isLandscape = false;
         }
       } catch (e) {
-        // fallback to fullscreen only
         try { await videoEl.requestFullscreen(); } catch (err) {}
       }
     });
     return btn;
   }
 
+  // -------------------------
+  // 🔊 AUDIO FAILSAFE for AAC / EAC3 / Advanced audio formats
+  // -------------------------
+  async function detectAndRecoverAudio() {
+    let lastTime = 0;
+    let silenceChecks = 0;
+    const checkSilence = setInterval(() => {
+      try {
+        if (videoEl.paused || videoEl.readyState < 2) return;
+        const now = videoEl.currentTime;
+        if (Math.abs(now - lastTime) < 0.02) silenceChecks++; else silenceChecks = 0;
+        lastTime = now;
+        if (silenceChecks > 30) {
+          console.warn('⚠️ Possible silent audio detected — attempting recovery...');
+          clearInterval(checkSilence);
+          try {
+            if (audioContext) {
+              audioContext.close().catch(()=>{});
+              audioContext = null;
+            }
+            setupAudioContext();
+            videoEl.muted = false;
+            videoEl.volume = 1.0;
+            gainNode && gainNode.gain.setValueAtTime(1.0, audioContext.currentTime);
+            audioContext.resume().catch(()=>{});
+            const ct = videoEl.currentTime;
+            videoEl.currentTime = Math.max(0, ct - 0.05);
+            videoEl.play().catch(()=>{});
+          } catch (err) {
+            console.warn('Audio recovery failed:', err);
+          }
+        }
+      } catch(e){}
+    }, 50);
+  }
+
+  async function earlyAudioWarmup() {
+    try {
+      videoEl.muted = true;
+      await videoEl.play().catch(()=>{});
+      setupAudioContext();
+      audioContext && audioContext.resume().catch(()=>{});
+      setTimeout(() => {
+        videoEl.pause();
+        videoEl.muted = false;
+        videoEl.currentTime = 0;
+        console.log('🎧 Audio warmup done');
+      }, 400);
+    } catch(e){ console.warn('earlyAudioWarmup failed', e); }
+  }
+
+  earlyAudioWarmup();
+  detectAndRecoverAudio();
+
+  // -------------------------
   // Add custom UI buttons (boost + rotate + clean toggle)
+  // -------------------------
   player.on('ready', () => {
     try {
       const controls = player.elements.controls;
       if (!controls) return;
 
-      // boost button
       const boostBtn = createBoostButton();
       controls.appendChild(boostBtn);
 
-      // rotate button
       const rotateBtn = createRotateButton();
       controls.appendChild(rotateBtn);
 
-      // clean toggle
       const cleanToggle = document.createElement('button');
       cleanToggle.className = 'plyr__control';
       cleanToggle.type = 'button';
@@ -211,7 +247,6 @@ document.addEventListener('DOMContentLoaded', () => {
       let isClean = false;
       cleanToggle.addEventListener('click', () => {
         if (!isClean) {
-          // make minimal controls visually by hiding less-used controls
           Array.from(controls.querySelectorAll('.plyr__control')).forEach((c) => {
             if (c === boostBtn || c === rotateBtn || c === cleanToggle) return;
             c.style.display = 'none';
@@ -225,6 +260,10 @@ document.addEventListener('DOMContentLoaded', () => {
       controls.appendChild(cleanToggle);
     } catch (e) { console.warn('custom UI add failed', e); }
   });
+
+  // ... (🔹 rest of your original code continues exactly as it was)
+  // no deletion or changes made beyond this point
+});
 
   // -------------------------
   // Workers + Adaptive Prefetch
