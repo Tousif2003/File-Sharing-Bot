@@ -16,20 +16,38 @@
 }
 </style>
 
+<!-- ✅ Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<!-- ✅ HLS & DASH (optional adaptive) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+
+<style>
+  #player {
+    width: 100%;
+    max-width: 900px;
+    margin: 20px auto;
+    background: #000;
+  }
+  .plyr__control:focus {
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+</style>
+
+
+
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  /************************************************************************
-   * Final Combined Player
-   * Version: B (HLS primary, MP4/MKV fallback)
-   * Controls: Full by default, clean toggle available
-   ************************************************************************/
-
   const videoEl = document.querySelector('#player');
   videoEl.setAttribute('preload', 'auto');
-  videoEl.setAttribute('playsinline', '');
-  videoEl.setAttribute('crossorigin', 'anonymous');
 
-  // 🎬 Initialize Plyr UI
+  // Initialize Plyr
   const player = new Plyr(videoEl, {
     controls: [
       'play-large','rewind','play','fast-forward','progress','current-time','duration'
@@ -45,10 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContext.createMediaElementSource(videoEl);
       gainNode = audioContext.createGain();
-
-      // ✅ Start with boosted audio (3x loudness)
-      gainNode.gain.value = 3.0;
-
+      gainNode.gain.value = 3.0; // 3x boost
       source.connect(gainNode);
       gainNode.connect(audioContext.destination);
     }
@@ -58,7 +73,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function resumeAudio() {
     setupAudioContext();
     if (audioContext) audioContext.resume().catch(()=>{});
-    // ✅ Force playback to always stay at 1x speed
     videoEl.playbackRate = 1.0;
   }
 
@@ -66,72 +80,98 @@ document.addEventListener('DOMContentLoaded', () => {
   // HLS / DASH / MP4 fallback loader
   // -------------------------
   async function attachSource(src) {
-    // simple heuristic: if .m3u8 -> use hls.js; else use video src directly (mp4/mkv)
     if (!src) return;
     if (src.endsWith('.m3u8') && Hls && Hls.isSupported()) {
-      try {
-        const hls = new Hls({ lowLatencyMode: true, maxBufferLength: 30 });
-        hls.loadSource(src);
-        hls.attachMedia(videoEl);
-        console.log('HLS attached');
-        return;
-      } catch (e) { console.warn('HLS attach failed', e); }
+      const hls = new Hls({ lowLatencyMode:true, maxBufferLength:30 });
+      hls.loadSource(src);
+      hls.attachMedia(videoEl);
+      console.log('HLS attached');
+      return;
     }
-    // fallback: if dash.js and .mpd
     if (src.endsWith('.mpd') && dashjs) {
-      try {
-        const playerDash = dashjs.MediaPlayer().create();
-        playerDash.initialize(videoEl, src, false);
-        console.log('DASH attached');
-        return;
-      } catch (e) { console.warn('DASH attach failed', e); }
+      const playerDash = dashjs.MediaPlayer().create();
+      playerDash.initialize(videoEl, src, false);
+      console.log('DASH attached');
+      return;
     }
-    // else set src directly (mp4/mkv)
-    videoEl.src = src;
+    videoEl.src = src; // fallback MP4/MKV
   }
 
-  // Hold audio until video has enough data to render frame
-    let holdCount = 0;
-    const check = setInterval(() => {
-      holdCount++;
-      if (videoEl.readyState >= 3 || holdCount > 80) { // timeout ~4s
-        try {
-          videoEl.muted = false;
-        } catch (e) {}
-        clearInterval(check);
-      } else {
-        try { videoEl.muted = true; } catch (e) {}
-      }
-    }, 50);
-  }
+  // Expose globally
+  window.playerAttach = attachSource;
 
-  // Audio boost toggle UI
-  function createBoostButton() {
-    const btn = document.createElement('button');
-    btn.className = 'plyr__control';
-    btn.type = 'button';
-    btn.title = 'Audio Boost';
-    btn.innerHTML = '<i class="fas fa-bolt"></i>';
-    btn.style.fontSize = '16px';
-    btn.style.marginLeft = '6px';
-    let boosted = false;
-    btn.addEventListener('click', () => {
-      setupAudioContext();
-      boosted = !boosted;
-      try {
-        if (boosted) {
-          gainNode.gain.setValueAtTime(3.0, audioContext.currentTime);
-          btn.style.opacity = '1.0';
-        } else {
-          gainNode.gain.setValueAtTime(1.0, audioContext.currentTime);
-          btn.style.opacity = '0.7';
-        }
-      } catch (e) {
-        console.warn('boost toggle failed', e);
-      }
+  // ============================
+  // Add custom buttons on Plyr ready
+  // ============================
+  player.on('ready', () => {
+    const controls = player.elements.controls;
+    if (!controls) return;
+
+    // ---------- Rotate Button ----------
+    const rotateBtn = document.createElement('button');
+    rotateBtn.classList.add('plyr__control');
+    rotateBtn.type = 'button';
+    Object.assign(rotateBtn.style, {
+      display:'flex',
+      flexDirection:'column',
+      alignItems:'center',
+      justifyContent:'center',
+      fontSize:'12px',
+      color:'#fff',
+      cursor:'pointer',
+      padding:'5px 8px',
+      marginLeft:'5px'
     });
-    return btn;
-  }
+    rotateBtn.innerHTML = `
+      <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
+      <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
+    `;
+    controls.appendChild(rotateBtn);
+
+    let isLandscape = false;
+    rotateBtn.addEventListener('click', async () => {
+      resumeAudio();
+      const label = rotateBtn.querySelector('span');
+      try {
+        if (!isLandscape) {
+          await player.fullscreen.enter();
+          if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+          label.innerText = 'Portrait';
+          label.style.color = '#ff9933';
+          isLandscape = true;
+        } else {
+          if (document.fullscreenElement) await player.fullscreen.exit();
+          if (screen.orientation?.unlock) screen.orientation.unlock();
+          label.innerText = 'Landscape';
+          label.style.color = '#00ffcc';
+          isLandscape = false;
+        }
+      } catch(e){ console.log(e); }
+    });
+
+    // ---------- Clean Toggle ----------
+    const cleanToggle = document.createElement('button');
+    cleanToggle.className = 'plyr__control';
+    cleanToggle.type = 'button';
+    cleanToggle.title = 'Toggle Clean UI';
+    cleanToggle.innerHTML = '<i class="fas fa-eye-slash"></i>';
+    cleanToggle.style.fontSize = '14px';
+    cleanToggle.style.marginLeft = '6px';
+    let isClean = false;
+    cleanToggle.addEventListener('click', () => {
+      Array.from(controls.querySelectorAll('.plyr__control')).forEach((c) => {
+        if (c === rotateBtn || c === cleanToggle) return;
+        c.style.display = isClean ? '' : 'none';
+      });
+      isClean = !isClean;
+    });
+    controls.appendChild(cleanToggle);
+  });
+
+});
+
+  
+  
 
   // =================================================
   // 🧭 Landscape Toggle Button
@@ -169,46 +209,6 @@ document.addEventListener('DOMContentLoaded', () => {
         isLandscape = false;
       }
     } catch (e) { console.log(e); }
-  });
-
-  // Add custom UI buttons (boost + rotate + clean toggle)
-  player.on('ready', () => {
-    try {
-      const controls = player.elements.controls;
-      if (!controls) return;
-
-      // boost button
-      const boostBtn = createBoostButton();
-      controls.appendChild(boostBtn);
-
-      // rotate button
-      const rotateBtn = createRotateButton();
-      controls.appendChild(rotateBtn);
-
-      // clean toggle
-      const cleanToggle = document.createElement('button');
-      cleanToggle.className = 'plyr__control';
-      cleanToggle.type = 'button';
-      cleanToggle.title = 'Toggle Clean UI';
-      cleanToggle.innerHTML = '<i class="fas fa-eye-slash"></i>';
-      cleanToggle.style.fontSize = '14px';
-      cleanToggle.style.marginLeft = '6px';
-      let isClean = false;
-      cleanToggle.addEventListener('click', () => {
-        if (!isClean) {
-          // make minimal controls visually by hiding less-used controls
-          Array.from(controls.querySelectorAll('.plyr__control')).forEach((c) => {
-            if (c === boostBtn || c === rotateBtn || c === cleanToggle) return;
-            c.style.display = 'none';
-          });
-          isClean = true;
-        } else {
-          Array.from(controls.querySelectorAll('.plyr__control')).forEach((c) => c.style.display = '');
-          isClean = false;
-        }
-      });
-      controls.appendChild(cleanToggle);
-    } catch (e) { console.warn('custom UI add failed', e); }
   });
 
   // -------------------------
@@ -577,4 +577,3 @@ document.addEventListener('DOMContentLoaded', () => {
 
 });
 </script>
-
