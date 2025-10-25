@@ -145,7 +145,47 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }, 120);
   });
+  
+// ✅ A/V Sync Correction System
+function fixSync() {
+  if (!audioContext || videoEl.paused) return;
 
+  const drift = videoEl.currentTime - audioContext.currentTime;
+
+  // major sync error
+  if (Math.abs(drift) > 0.35) {
+    // force catch-up
+    audioContext.resume().catch(()=>{});
+    videoEl.playbackRate = 1.0;
+    return;
+  }
+
+  // minor drift handling (smooth correction)
+  if (drift > 0.10) {
+    videoEl.playbackRate = 0.97; // audio ahead → slow video tiny bit
+  } else if (drift < -0.10) {
+    videoEl.playbackRate = 1.03; // video ahead → speed tiny bit
+  } else {
+    videoEl.playbackRate = 1.0; // perfectly sync
+  }
+}
+
+// Timer repeat correction
+setInterval(fixSync, 200);
+
+// Whenever video plays — force sync stabilization
+videoEl.addEventListener('play', () => {
+  resumeAudio();
+  videoEl.playbackRate = 1.0;
+  setTimeout(()=> fixSync(), 100);
+});
+
+// seeking fix
+videoEl.addEventListener('seeked', () => {
+  resumeAudio();
+  setTimeout(()=> fixSync(), 150);
+});
+  
   // =================================================
   // 🧭 Landscape Toggle Button
   // =================================================
