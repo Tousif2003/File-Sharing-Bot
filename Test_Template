@@ -31,14 +31,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // -------------------------
   // Controls configuration
+  
   // -------------------------
-  // Full controls (default) includes rotate, boost, clean toggle
-  const CONTROLS_FULL = [
-    'play-large','rewind','play','fast-forward',
-    'progress','current-time','duration',
-    'mute','volume','settings','captions',
-    'pip','airplay','download','fullscreen'
-  ];
+  // 🎬 Initialize Plyr UI
+  const player = new Plyr(videoEl, {
+    controls: [
+      'play-large','rewind','play','fast-forward','progress','current-time','duration'
+    ]
+  });
 
   // Add placeholders for custom buttons; we'll append them after Plyr ready
   const player = new Plyr(videoEl, { controls: CONTROLS_FULL });
