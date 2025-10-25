@@ -36,8 +36,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const CONTROLS_FULL = [
     'play-large','rewind','play','fast-forward',
     'progress','current-time','duration',
-    'mute','volume','settings','captions',
-    'pip','airplay','download','fullscreen'
   ];
 
   // Add placeholders for custom buttons; we'll append them after Plyr ready
