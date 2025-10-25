@@ -1,20 +1,52 @@
-<!-- ✅ Font Awesome for icons -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <!-- ✅ Font Awesome for icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 
-<!-- ✅ Plyr CSS & JS -->
-<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
-<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+  <!-- ✅ Plyr CSS & JS -->
+  <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+  <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
 
-<!-- ✅ HLS & DASH (optional adaptive) -->
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+  <!-- ✅ HLS & DASH (optional adaptive) -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
 
-<style>
-.plyr__control:focus {
-  outline: none;
-  -webkit-tap-highlight-color: transparent;
-}
-</style>
+  <style>
+    /* keep user's original small focus tweak */
+    .plyr__control:focus {
+      outline: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* --- Small button fix: avoid overlay blocking bottom controls --- */
+    .plyr__controls {
+      position: relative;
+      z-index: 60 !important;            /* ensure controls sit above overlays */
+      pointer-events: auto !important;   /* accept pointer events */
+    }
+
+    .plyr__control--overlaid,
+    .plyr__play-large {
+      z-index: 10 !important;            /* keep big center button lower in stacking */
+      pointer-events: auto !important;
+    }
+
+    /* Optional: slightly shrink very large overlay on small screens */
+    @media (max-width: 640px) {
+      .plyr__play-large { transform: translateY(-6px) scale(0.95); }
+    }
+
+    /* minor body/page styling so file is self-contained */
+    body { background:#000; color:#fff; margin:0; padding:20px; font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; display:flex; justify-content:center; }
+    .player-wrap { width:100%; max-width:980px; }
+    video { width:100%; border-radius:10px; display:block; }
+  </style>
+</head>
+<body>
+  <div class="player-wrap">
+    <!-- Replace src with your video or call playerAttach(url) -->
+    <video id="player" controls playsinline crossorigin preload="auto">
+      <source src="YOUR_VIDEO.mp4" type="video/mp4">
+    </video>
+  </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
@@ -36,6 +68,86 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initialize Plyr with limited controls
   const player = new Plyr(videoEl, { controls: CONTROLS });
+
+  /*******************************
+   * SMALL PLAY/Pause BUTTON FIX (ADDED)
+   *
+   * - Ensures the bottom "play" control always toggles playback
+   * - Adds click + touchstart handlers and a MutationObserver to rebind
+   *******************************/
+  function bindManualPlayButtonOnce() {
+    try {
+      const controls = player.elements && player.elements.controls;
+      if (!controls) return;
+
+      // find candidate small play button (data-plyr attribute or class)
+      const selectorCandidates = [
+        '[data-plyr="play"]',
+        '.plyr__control--play',
+        'button.plyr__control[aria-label*="Play"]'
+      ];
+      let playBtn = null;
+      for (const s of selectorCandidates) {
+        const found = controls.querySelector(s);
+        if (found) { playBtn = found; break; }
+      }
+      if (!playBtn) return;
+
+      // Avoid binding multiple times
+      if (playBtn._manualPlayBound) return;
+      playBtn._manualPlayBound = true;
+
+      const handler = async (e) => {
+        // defensive preventDefault (but still allow propagation)
+        try { if (e && e.preventDefault) e.preventDefault(); } catch(_) {}
+        try {
+          // prefer Plyr API if available (keeps internal state consistent)
+          if (player && typeof player.play === 'function' && typeof player.pause === 'function') {
+            if (player.playing) await player.pause(); else await player.play();
+            return;
+          }
+        } catch(err) {
+          // swallow and fallback
+          console.warn('Plyr manual toggle error, falling back to native:', err);
+        }
+        // fallback to video element
+        try {
+          if (videoEl.paused) await videoEl.play();
+          else videoEl.pause();
+        } catch(err) { console.warn('Native play/pause failed:', err); }
+      };
+
+      playBtn.addEventListener('click', handler, { passive: false });
+      playBtn.addEventListener('touchstart', handler, { passive: false });
+    } catch (e) {
+      console.warn('bindManualPlayButtonOnce failed', e);
+    }
+  }
+
+  // Try binding once Plyr is ready and keep watching for re-renders
+  player.on('ready', () => {
+    try {
+      // initial bind
+      bindManualPlayButtonOnce();
+
+      // mutation observer: if Plyr re-renders controls, re-bind
+      const controls = player.elements && player.elements.controls;
+      if (controls) {
+        const mo = new MutationObserver((m) => {
+          bindManualPlayButtonOnce();
+        });
+        mo.observe(controls, { childList: true, subtree: true });
+      }
+
+      // Defensive: ensure controls container accepts pointer events (in case CSS overridden)
+      try {
+        if (player.elements && player.elements.controls) {
+          player.elements.controls.style.pointerEvents = 'auto';
+          player.elements.controls.style.zIndex = '60';
+        }
+      } catch(e){}
+    } catch(e){ console.warn('play button patch failed', e); }
+  });
 
   /*******************************
    * AudioContext + basic pipeline
@@ -601,6 +713,3 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
 });
 </script>
-
-
-
