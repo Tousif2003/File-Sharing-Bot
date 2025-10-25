@@ -29,35 +29,37 @@ document.addEventListener('DOMContentLoaded', () => {
   videoEl.setAttribute('playsinline', '');
   videoEl.setAttribute('crossorigin', 'anonymous');
 
-  // -------------------------
-  // Controls configuration
-  // -------------------------
-  // Full controls (default) includes rotate, boost, clean toggle
-  const CONTROLS_FULL = [
-    'play-large','rewind','play','fast-forward',
-    'progress','current-time','duration',
-    'mute','volume','settings','captions',
-    'pip','airplay','download','fullscreen'
-  ];
+  // 🎬 Initialize Plyr UI
+  const player = new Plyr(videoEl, {
+    controls: [
+      'play-large','rewind','play','fast-forward','progress','current-time','duration'
+    ]
+  });
 
-  // Add placeholders for custom buttons; we'll append them after Plyr ready
-  const player = new Plyr(videoEl, { controls: CONTROLS_FULL });
+  // ============================
+  // 🔊 Audio Context + Boost
+  // ============================
+  let audioContext, gainNode;
+  function setupAudioContext() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaElementSource(videoEl);
+      gainNode = audioContext.createGain();
 
-  // expose a function to toggle clean UI later if needed
-  function cleanMode() {
-    try {
-      player.elements.controls.innerHTML = '';
-      const cleanList = ['play-large','play','progress','current-time','duration','fullscreen'];
-      cleanList.forEach(id => {
-        const el = document.createElement('div');
-        el.className = 'plyr__control';
-        el.textContent = ''; // Plyr won't auto-render these, but keep minimal
-      });
-      // quick minimal fallback: restore default controls set smaller
-      player.destroy();
-      const p2 = new Plyr(videoEl, { controls: ['play-large','progress','current-time','fullscreen'] });
-      return p2;
-    } catch (e) { console.log('cleanMode failed', e); }
+      // ✅ Start with boosted audio (3x loudness)
+      gainNode.gain.value = 3.0;
+
+      source.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+    }
+    audioContext.resume().catch(()=>{});
+  }
+
+  function resumeAudio() {
+    setupAudioContext();
+    if (audioContext) audioContext.resume().catch(()=>{});
+    // ✅ Force playback to always stay at 1x speed
+    videoEl.playbackRate = 1.0;
   }
 
   // -------------------------
@@ -88,35 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
     videoEl.src = src;
   }
 
-  // -------------------------
-  // AudioContext + Gain (Boost) + UI
-  // -------------------------
-  let audioContext, gainNode;
-  function setupAudioContext() {
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      try {
-        const source = audioContext.createMediaElementSource(videoEl);
-        gainNode = audioContext.createGain();
-        gainNode.gain.value = 1.0; // default normal; UI sets boost
-        source.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-      } catch (e) {
-        console.warn('AudioContext setup failed', e);
-      }
-    }
-    audioContext.resume().catch(()=>{});
-  }
-
-  // resumeAudio: improved — hold audio until frame ready
-  function resumeAudio() {
-    setupAudioContext();
-    if (audioContext && audioContext.state === 'suspended') {
-      audioContext.resume().catch(()=>{});
-    }
-    videoEl.playbackRate = 1.0;
-
-    // Hold audio until video has enough data to render frame
+  // Hold audio until video has enough data to render frame
     let holdCount = 0;
     const check = setInterval(() => {
       holdCount++;
@@ -159,34 +133,43 @@ document.addEventListener('DOMContentLoaded', () => {
     return btn;
   }
 
-  // Rotate / Landscape button
-  function createRotateButton() {
-    const btn = document.createElement('button');
-    btn.className = 'plyr__control';
-    btn.type = 'button';
-    btn.title = 'Rotate / Landscape';
-    btn.innerHTML = '<i class="fas fa-expand"></i>';
-    btn.style.fontSize = '16px';
-    btn.style.marginLeft = '6px';
-    let isLandscape = false;
-    btn.addEventListener('click', async () => {
-      try {
-        if (!isLandscape) {
-          if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape');
-          if (player && player.fullscreen) await player.fullscreen.enter();
-          isLandscape = true;
-        } else {
-          if (player && player.fullscreen) await player.fullscreen.exit();
-          if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
-          isLandscape = false;
-        }
-      } catch (e) {
-        // fallback to fullscreen only
-        try { await videoEl.requestFullscreen(); } catch (err) {}
+  // =================================================
+  // 🧭 Landscape Toggle Button
+  // =================================================
+  const rotateBtn = document.createElement('button');
+  rotateBtn.classList.add('plyr__control');
+  rotateBtn.type = 'button';
+  Object.assign(rotateBtn.style, {
+    display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+    fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'5px',
+    WebkitTapHighlightColor:'transparent'
+  });
+  rotateBtn.innerHTML = `
+    <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
+    <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
+  `;
+  player.elements.controls.appendChild(rotateBtn);
+
+  let isLandscape = false;
+  rotateBtn.addEventListener('click', async () => {
+    resumeAudio();
+    const label = rotateBtn.querySelector('span');
+    try {
+      if (!isLandscape) {
+        await player.fullscreen.enter();
+        if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+        label.innerText = 'Portrait';
+        label.style.color = '#ff9933';
+        isLandscape = true;
+      } else {
+        if (document.fullscreenElement) await player.fullscreen.exit();
+        if (screen.orientation?.unlock) screen.orientation.unlock();
+        label.innerText = 'Landscape';
+        label.style.color = '#00ffcc';
+        isLandscape = false;
       }
-    });
-    return btn;
-  }
+    } catch (e) { console.log(e); }
+  });
 
   // Add custom UI buttons (boost + rotate + clean toggle)
   player.on('ready', () => {
@@ -594,33 +577,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 });
 </script>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
