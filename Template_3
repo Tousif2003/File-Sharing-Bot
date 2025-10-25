@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta property="og:image" content="https://i.ibb.co/M8S0Zzj/live-streaming.png" itemprop="thumbnailUrl">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ heading }}</title>
+
+    <!-- Fonts & Icons -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway|Delius">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+
+    <!-- Plyr Video Player -->
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+
+    <style>
+        body {
+            font-family: sans-serif;
+            font-size: 16px;
+            margin: 0;
+            padding: 0;
+        }
+
+        marquee {
+            font-size: 22px;
+            color: black;
+            font-family: serif;
+        }
+
+        .set-container {
+            padding: 15px;
+        }
+
+        #player-container {
+            margin: 10px 0;
+        }
+
+        #info-box {
+            border: 1px solid #140cf0;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            word-wrap: break-word;
+        }
+
+        .stream-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .stream-options a {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 5px 10px;
+            border-radius: 6px;
+            background-color: #2D76FF;
+            color: #fff;
+            transition: all 0.3s;
+        }
+
+        .stream-options a:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 8px 12px;
+            margin-bottom: 20px;
+            border-radius: 6px;
+            background-color: #28a745;
+            color: #fff;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .download-btn:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        footer {
+            font-size: 12px;
+            color: #7b89a3;
+            padding: 20px 10px 0 10px;
+            border-top: 1px solid #c2cee3;
+            text-align: center;
+        }
+
+        footer a {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="set-container">
+
+    <!-- Marquee Header -->
+    <header>
+        <marquee bgcolor="#808080">
+            <div id="file-name">{{ file_name }}</div>
+        </marquee>
+    </header>
+
+    <!-- Video Player -->
+    <div id="player-container">
+        <video id="player" playsinline preload="metadata" controlsList="nodownload" aria-label="Video player">
+            <source src="{{ src }}" type="video/mp4">
+            <p>Your browser does not support the video tag. Please <a href="{{ src }}" download>download the video</a> instead.</p>
+        </video>
+    </div>
+
+    <!-- Stream Options -->
+<p class="fancy-text">ꜱᴛʀᴇᴀᴍ ᴏᴘᴛɪᴏɴꜱ</p>
+
+<style>
+.fancy-text {
+  font-weight: bold;
+  font-size: 1rem;
+  color: #ff66cc; /* pink */
+}
+</style>
+<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+
+    <!-- VLC -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/GtnGhBV/videolan-vlc-logo-icon-170258.png" alt="VLC" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- XPlayer -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=video.player.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=video.player.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/pByqt2ZK/x.png" alt="XPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- KMPlayer -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.kmplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.kmplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/bjPYQjkZ/x.png" alt="KMPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- Playit -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.playit.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.playit.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/JsDNHgz/c0C4vnAa.png" alt="Playit" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+</div>
+
+<!-- Download Button -->
+<a href="{{ src }}" download
+   style="display: flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; background-color: #2D76FF; color: #fff; border-radius: 12px; padding: 15px; margin-top: 15px; font-weight: bold; font-size: 18px; box-shadow: 0 0 15px #2d76ff; transition: all 0.3s;">
+    <i class="fas fa-download" style="font-size: 20px;"></i> Download Now
+</a>
+
+<style>
+/* Pop & Bounce effect */
+@keyframes popBounce {
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1.1); }
+  70% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+/* Base style for all buttons: visible but scaled down initially */
+.stream-options a,
+.card.card-body {
+  transform: scale(0.8); /* start smaller */
+  animation: popBounce 0.6s ease forwards;
+  animation-fill-mode: forwards;
+}
+
+/* Sequential animation: initial wait 1s, then each button 0.5s after previous */
+.stream-options a:nth-child(1),
+.card.card-body:nth-child(1) { animation-delay: 1s; }
+.stream-options a:nth-child(2),
+.card.card-body:nth-child(2) { animation-delay: 1.5s; }
+.stream-options a:nth-child(3),
+.card.card-body:nth-child(3) { animation-delay: 2s; }
+.stream-options a:nth-child(4),
+.card.card-body:nth-child(4) { animation-delay: 2.5s; }
+.stream-options a:nth-child(5),
+.card.card-body:nth-child(5) { animation-delay: 3s; }
+.stream-options a:nth-child(6),
+.card.card-body:nth-child(6) { animation-delay: 3.5s; }
+
+/* Remove old fade/slide effects */
+.fadeInLeft, .fadeInRight, .shakeX {
+  animation-name: none !important;
+}
+</style>
+
+    <!-- Info Box -->
+    <div id="info-box">
+        <p style="font-size: 15px; color:#120e0e;">
+           <span style="color:#ff0000;"><u><b>𝐍𝐨𝐭𝐞</b></u></span> : ɪꜰ ʏᴏᴜ ꜰɪɴᴅ ᴀɴʏ ʙʀᴏᴋᴇɴ ʟɪɴᴋ ᴛʜᴇɴ ᴘʟᴇᴀsᴇ ʀᴇᴘᴏʀᴛ ᴛᴏ ᴍʏ 
+            <a href="https://telegram.me/FilmymodOwner_Bot" style="color: blue"><b>sᴜᴘᴘᴏʀᴛ ᴛᴇᴀᴍ</b></a>
+        </p>
+    </div>
+
+    <!-- Main Updates -->
+    <div class="mainupdates" style="text-align:center; margin-top:20px;">
+        <div style="margin-bottom: 10px;">𝐉𝐨𝐢𝐧 𝐎𝐮𝐫 𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐅𝐨𝐫 𝐌𝐨𝐫𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 💖</div>
+        <a href="https://telegram.me/FilmyMod123">
+            <img src="https://img.shields.io/badge/Updates- Channel -blueviolet?style=for-the-badge" alt="Channel">
+        </a>
+    </div>
+
+</div>
+
+<!-- ✅ Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<!-- ✅ HLS & DASH (optional adaptive) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+
+<style>
+.plyr__control:focus {
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  /************************************************************************
+   * Player init (original features preserved)
+   ************************************************************************/
+  const videoEl = document.querySelector('#player');
+  videoEl.setAttribute('preload', 'auto');
+  videoEl.setAttribute('playsinline', '');
+  videoEl.setAttribute('crossorigin', 'anonymous');
+
+  const player = new Plyr(videoEl, {
+    controls: ['play-large','rewind','play','fast-forward','progress','current-time','duration']
+  });
+
+  // Audio context + gain (boost)
+  let audioContext, gainNode;
+  function setupAudioContext() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaElementSource(videoEl);
+      gainNode = audioContext.createGain();
+      // default boost (you can change later)
+      gainNode.gain.value = 3.0;
+      source.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+    }
+    audioContext.resume().catch(()=>{});
+  }
+  function resumeAudio() {
+    setupAudioContext();
+    if (audioContext) audioContext.resume().catch(()=>{});
+    videoEl.playbackRate = 1.0;
+  }
+
+  /************************************************************************
+   * Smart MKV prefetch (initial)
+   ************************************************************************/
+  async function smartMKVPrefetch() {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (!src || !src.endsWith('.mkv')) return;
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 8000); // longer timeout for slow servers
+      const res = await fetch(src, { headers: { Range: 'bytes=0-8388607' }, signal: controller.signal });
+      if (res && res.ok) console.log('✅ Initial MKV Prefetch (8MB)');
+    } catch (e) {
+      console.log('ℹ️ MKV Prefetch skipped:', e.message);
+    }
+  }
+  smartMKVPrefetch();
+
+  /************************************************************************
+   * Workers + adaptive prefetch (original but tuned)
+   ************************************************************************/
+  const workerCode = `
+    self.onmessage = async (e) => {
+      const { id, task, src, range, timeout } = e.data;
+      if (!src || !range) { self.postMessage({ id, ok:false, task, error:'no-src-or-range' }); return; }
+      try {
+        const controller = new AbortController();
+        const to = setTimeout(()=>controller.abort(), timeout || 8000); // longer default
+        const r = await fetch(src, { headers: { Range: range }, signal: controller.signal, cache:'no-store' });
+        clearTimeout(to);
+        if (!r.ok) { self.postMessage({ id, ok:false, task, status:r.status }); return; }
+        const blob = await r.blob();
+        self.postMessage({ id, ok:true, task, range, size: blob.size });
+      } catch (err) {
+        self.postMessage({ id, ok:false, task, error: String(err) });
+      }
+    };
+  `;
+  const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+  const workerURL = URL.createObjectURL(workerBlob);
+  const prefetchWorker = new Worker(workerURL);
+  const seekWorker = new Worker(workerURL);
+
+  prefetchWorker.onmessage = (e) => { /* optional logging */ };
+  seekWorker.onmessage = (e) => { /* optional logging */ };
+
+  // network estimator (unchanged but tolerant)
+  const net = {
+    lastRTT: 0, kbpsEstimate: null,
+    async estimate(src) {
+      try {
+        const t0 = performance.now();
+        const controller = new AbortController();
+        setTimeout(()=>controller.abort(), 6000);
+        const res = await fetch(src, { headers: { Range: 'bytes=0-65535' }, signal: controller.signal });
+        const t1 = performance.now();
+        if (!res.ok) return null;
+        const len = +(res.headers.get('Content-Length') || 65536);
+        const ms = Math.max(1, t1 - t0);
+        this.kbpsEstimate = (len * 8) / ms;
+        this.lastRTT = ms;
+        return this.kbpsEstimate;
+      } catch (e) { return null; }
+    }
+  };
+
+  const adaptive = {
+    minMB: 8,
+    maxMB: 20, // more aggressive for big files on slow hosts
+    getChunk(currentTime, src, preferLarger=false){
+      const est = net.kbpsEstimate;
+      const sizeMB = preferLarger ? this.maxMB : this.minMB;
+      const chosenMB = (est && est > 0.03) ? this.maxMB : sizeMB;
+      // use a conservative bitrate estimate but allow bigger prefetch for large files
+      const bitrate = 1.0 * 1024 * 1024; // 1 MB/s estimate (safer for big files)
+      const start = Math.max(0, Math.floor(currentTime * bitrate));
+      const chunk = Math.floor(chosenMB * 1024 * 1024);
+      return { start, end: start + chunk - 1, chunkBytes: chunk };
+    }
+  };
+
+  async function smartFetchRange(src, range, attempts = 3, timeout = 9000) {
+    for (let i=0;i<attempts;i++){
+      try {
+        const controller = new AbortController();
+        setTimeout(()=>controller.abort(), timeout);
+        const res = await fetch(src, { headers: { Range: range }, signal: controller.signal, cache:'no-store' });
+        if (res.ok) return res;
+      } catch (e) { /* retry */ }
+      await new Promise(r=>setTimeout(r, 300 + i*200));
+    }
+    throw new Error('range-fetch-failed');
+  }
+
+  /************************************************************************
+   * 100 ms stabilizer (seek worker warmup)
+   ************************************************************************/
+  let advSeekTimer;
+  videoEl.addEventListener('seeking', () => {
+    clearTimeout(advSeekTimer);
+    advSeekTimer = setTimeout(() => {
+      if (videoEl.readyState < 3) {
+        try {
+          const src = videoEl.currentSrc || videoEl.src;
+          if (!src) return;
+          const bitrate = 1.0 * 1024 * 1024;
+          const start = Math.max(0, Math.floor(videoEl.currentTime * bitrate));
+          const end = start + (6 * 1024 * 1024) - 1; // bigger warmup chunk (6MB)
+          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:7000 });
+        } catch(e){}
+      }
+    }, 100);
+  });
+
+  /************************************************************************
+   * Background prefetch loop - faster cadence for slow servers
+   ************************************************************************/
+  let backgroundPrefetchInterval = null;
+  function startBackgroundPrefetch() {
+    if (backgroundPrefetchInterval) return;
+    backgroundPrefetchInterval = setInterval(async () => {
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (!src) return;
+        await net.estimate(src).catch(()=>{});
+        const lookahead = Math.max(12, Math.floor(videoEl.currentTime + 10));
+        const { start, end } = adaptive.getChunk(lookahead, src, false);
+        prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:7000 });
+      } catch(e){}
+    }, 200); // 200ms (faster hints for slow hosts)
+  }
+  function stopBackgroundPrefetch(){
+    if (backgroundPrefetchInterval) {
+      clearInterval(backgroundPrefetchInterval);
+      backgroundPrefetchInterval = null;
+    }
+  }
+  startBackgroundPrefetch();
+
+  /************************************************************************
+   * Robust Cross-Browser A/V Sync + Seek Stabilizer (tuned for Koyeb/Heroku)
+   ************************************************************************/
+  let audioOffset = 0;
+  let syncInterval = null;
+  let emaRate = 1.0;
+  const EMA_ALPHA = 0.18;
+  const POLL_MS = 120; // slightly faster polling
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function isTimeBuffered(time) {
+    try {
+      const buf = videoEl.buffered;
+      for (let i = 0; i < buf.length; i++) {
+        if (time >= buf.start(i) - 0.05 && time <= buf.end(i) + 0.05) {
+          return { start: buf.start(i), end: buf.end(i) };
+        }
+      }
+    } catch(e){}
+    return null;
+  }
+
+  function refreshAudioOffset() {
+    if (!audioContext) return;
+    try {
+      audioOffset = audioContext.currentTime - videoEl.currentTime;
+      const outLatency = (audioContext.outputLatency || audioContext.baseLatency || 0);
+      audioOffset -= outLatency;
+    } catch(e){}
+  }
+
+  function ensureAudioReady() {
+    if (!audioContext) return;
+    audioContext.resume().catch(()=>{});
+    setTimeout(refreshAudioOffset, 60);
+  }
+
+  function attemptBufferedRender(targetTime, timeoutMs = 5000) {
+    // Wait until targetTime is buffered OR a frame render callback happens there.
+    return new Promise((resolve) => {
+      const start = performance.now();
+      let settled = false;
+
+      // quick check
+      if (isTimeBuffered(targetTime)) return resolve(true);
+
+      // use requestVideoFrameCallback if available to confirm next frame
+      let rvfcId = null;
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+        try {
+          const frameCheck = () => {
+            try {
+              rvfcId = videoEl.requestVideoFrameCallback(() => {
+                if (!settled && (isTimeBuffered(targetTime) || videoEl.currentTime >= (targetTime - 0.1))) {
+                  settled = true;
+                  resolve(true);
+                } else if (!settled && (performance.now() - start > timeoutMs)) {
+                  settled = true;
+                  resolve(false);
+                } else if (!settled) {
+                  frameCheck();
+                }
+              });
+            } catch(e){}
+          };
+          frameCheck();
+        } catch(e){}
+      }
+
+      // fallback: poll readyState and buffered ranges
+      const poll = setInterval(() => {
+        if (isTimeBuffered(targetTime) || videoEl.readyState >= 3 || (performance.now() - start > timeoutMs)) {
+          clearInterval(poll);
+          if (!settled) {
+            settled = true;
+            resolve(isTimeBuffered(targetTime) || videoEl.readyState >= 3);
+          }
+        }
+      }, 100);
+
+      // safety timeout
+      setTimeout(() => { if (!settled) { settled = true; clearInterval(poll); resolve(false); } }, timeoutMs + 120);
+    });
+  }
+
+  function syncTick() {
+    if (!audioContext || videoEl.paused || videoEl.readyState < 2) {
+      emaRate = 1.0;
+      if (videoEl.playbackRate !== 1.0) try{ videoEl.playbackRate = 1.0; }catch(e){}
+      return;
+    }
+    let expectedAudioTime = audioContext.currentTime - audioOffset;
+    if (typeof audioContext.outputLatency === 'number') expectedAudioTime -= audioContext.outputLatency;
+    else if (typeof audioContext.baseLatency === 'number') expectedAudioTime -= audioContext.baseLatency;
+
+    const vtime = videoEl.currentTime;
+    let drift = expectedAudioTime - vtime;
+    if (!isFinite(drift) || Math.abs(drift) > 300) { refreshAudioOffset(); return; }
+
+    // large drift: try snap only if buffered (aggressive prefetch first for slow hosts)
+    if (Math.abs(drift) > 0.45) {
+      const targetTime = vtime + drift;
+      // aggressive seek-warmup: request a larger chunk around target
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (src) {
+          const bitrate = 1.0 * 1024 * 1024;
+          const startByte = Math.max(0, Math.floor(targetTime * bitrate) - (4 * 1024 * 1024));
+          const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+        }
+      } catch(e){}
+
+      const buf = isTimeBuffered(targetTime);
+      if (buf) {
+        const safeTarget = clamp(targetTime, buf.start + 0.02, buf.end - 0.02);
+        try {
+          videoEl.pause();
+          videoEl.currentTime = safeTarget;
+          // wait for buffer/render local confirmation before playing
+          attemptBufferedRender(safeTarget, 4200).then((ok) => {
+            ensureAudioReady();
+            setTimeout(()=> {
+              videoEl.play().catch(()=>{});
+              refreshAudioOffset();
+            }, 120);
+          });
+        } catch (e){}
+        return;
+      }
+      // otherwise fallthrough to smooth correction
+    }
+
+    // smooth correction
+    const gain = 0.12;
+    let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
+    if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
+    emaRate = emaRate + (rawTargetRate - emaRate) * EMA_ALPHA;
+    const finalRate = clamp(emaRate, 0.94, 1.06);
+    if (Math.abs(videoEl.playbackRate - finalRate) > 0.0009) {
+      try { videoEl.playbackRate = finalRate; } catch(e){}
+    }
+    if (Math.abs(drift) > 0.8) refreshAudioOffset();
+  }
+
+  function startSyncLoop() {
+    if (syncInterval) return;
+    refreshAudioOffset();
+    syncInterval = setInterval(syncTick, POLL_MS);
+    setTimeout(syncTick, 40);
+  }
+  function stopSyncLoop() {
+    if (!syncInterval) return;
+    clearInterval(syncInterval);
+    syncInterval = null;
+    try { videoEl.playbackRate = 1.0; } catch(e){}
+    emaRate = 1.0;
+  }
+
+  // Seeking handlers (mute & prefetch strategy tuned for slow hosts)
+  let userSeeking = false;
+  let savedGainValue = 1.0;
+
+  videoEl.addEventListener('seeking', () => {
+    userSeeking = true;
+    stopSyncLoop();
+    // suspend audio context to avoid audio playing the old buffer
+    if (audioContext && audioContext.state === 'running') {
+      try { audioContext.suspend().catch(()=>{}); } catch(e){}
+    }
+    // pause video (original behavior)
+    clearTimeout(window._seekTimeout);
+    videoEl.pause();
+    window._seekTimeout = setTimeout(() => {
+      if (videoEl.readyState >= 3) {
+        videoEl.play().catch(()=>{});
+      } else {
+        const rc = setInterval(() => {
+          if (videoEl.readyState >= 3) {
+            clearInterval(rc);
+            videoEl.play().catch(()=>{});
+          }
+        }, 150);
+        setTimeout(()=>clearInterval(rc), 4000);
+      }
+    }, 120);
+  });
+
+  videoEl.addEventListener('seeked', async () => {
+    userSeeking = false;
+
+    // mute via gainNode (store previous)
+    try {
+      if (gainNode && audioContext) {
+        savedGainValue = gainNode.gain.value || 1.0;
+        gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+        gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      }
+    } catch(e){}
+
+    // aggressive prefetch around new position for slow hosts
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (src) {
+        const bitrate = 1.0 * 1024 * 1024;
+        const startByte = Math.max(0, Math.floor(videoEl.currentTime * bitrate) - (2 * 1024 * 1024));
+        const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+        seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+      }
+    } catch(e){}
+
+    // Wait until buffered/rendered near new time (attemptBufferedRender uses rvfc or readyState checks)
+    const target = videoEl.currentTime;
+    const ok = await attemptBufferedRender(target, 5200);
+
+    // resume audio pipeline & refresh offset
+    ensureAudioReady();
+    refreshAudioOffset();
+
+    // small delay then unmute & start sync
+    setTimeout(() => {
+      try {
+        if (gainNode && audioContext) {
+          // restore to saved value (or default 3.0)
+          gainNode.gain.setValueAtTime(savedGainValue || 3.0, audioContext.currentTime);
+        }
+      } catch(e){}
+      startSyncLoop();
+      syncTick();
+    }, 140);
+  });
+
+  // play/playing listeners
+  videoEl.addEventListener('play', () => {
+    ensureAudioReady();
+    refreshAudioOffset();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('playing', () => {
+    refreshAudioOffset();
+    syncTick();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('ratechange', () => { emaRate = clamp(videoEl.playbackRate, 0.5, 2.0); });
+
+  // wrap original setupAudioContext to start sync loop when created
+  const _origSetup = setupAudioContext;
+  setupAudioContext = function() {
+    _origSetup();
+    setTimeout(() => { try { refreshAudioOffset(); startSyncLoop(); } catch(e){} }, 80);
+  };
+
+  // MSE scaffold (unchanged except tolerant timeouts)
+  let msSupported = !!window.MediaSource;
+  let mseController = { enabled:false, mediaSource:null, sourceBuffer:null, appendQueue:[] };
+
+  async function tryInitMSE() {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (!src) return;
+      if (!msSupported) return;
+      if (!src.endsWith('.mp4')) return;
+      const mime = 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"';
+      if (!MediaSource.isTypeSupported(mime)) return;
+      const ms = new MediaSource();
+      mseController.mediaSource = ms;
+      videoEl.src = URL.createObjectURL(ms);
+      ms.addEventListener('sourceopen', async () => {
+        try {
+          const sb = ms.addSourceBuffer(mime);
+          mseController.sourceBuffer = sb;
+          mseController.enabled = true;
+          const res = await smartFetchRange(src, 'bytes=0-1258291', 2, 9000).catch(()=>null);
+          if (!res) return;
+          const ab = await res.arrayBuffer();
+          const appendChunk = () => {
+            if (!mseController.sourceBuffer || mseController.sourceBuffer.updating) {
+              setTimeout(appendChunk, 50);
+              return;
+            }
+            try { mseController.sourceBuffer.appendBuffer(ab); console.log('MSE: appended initial chunk'); } catch(err){ console.log('MSE append error', err); }
+          };
+          appendChunk();
+        } catch(err){ console.log('MSE open error', err); }
+      });
+    } catch(e){ console.log('MSE init skipped', e); }
+  }
+  tryInitMSE();
+
+  // cleanup
+  window.addEventListener('beforeunload', () => {
+    prefetchWorker.terminate();
+    seekWorker.terminate();
+    stopBackgroundPrefetch();
+    if (mseController.mediaSource) {
+      try { mseController.mediaSource.endOfStream(); } catch(e){}
+    }
+  });
+
+  console.log('✅ Player initialized (Koyeb/Heroku tuned) — robust sync & seek stabilizer active');
+});
+</script>
+<!-- Footer -->
+<footer>
+    <p>
+        This website only provides a service to play videos online without downloading. It does not offer storage or dissemination functions. You can report videos that contain copyright issues, explicit content, 18+, violence, etc. 
+        <a href="https://telegram.me/FilmymodOwner_Bot">Report</a>
+    </p>
+    <p><b>&copy; Copyright 2025<br>All Rights Reserved</b></p>
+</footer>
+
+</body>
+</html>
