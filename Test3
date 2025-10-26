@@ -1,1 +1,157 @@
+function syncTick() {
+    if (!audioContext || videoEl.paused || videoEl.readyState < 2) {
+      emaRate = 1.0;
+      try { if (videoEl.playbackRate !== 1.0) videoEl.playbackRate = 1.0; } catch(e){}
+      return;
+    }
+    let expectedAudioTime = audioContext.currentTime - audioOffset;
+    if (typeof audioContext.outputLatency === 'number') expectedAudioTime -= audioContext.outputLatency;
+    else if (typeof audioContext.baseLatency === 'number') expectedAudioTime -= audioContext.baseLatency;
 
+    const vtime = videoEl.currentTime;
+    let drift = expectedAudioTime - vtime;
+    if (!isFinite(drift) || Math.abs(drift) > 300) { refreshAudioOffset(); return; }
+
+    // big drift => attempt safe seek to buffered region
+    if (Math.abs(drift) > 0.45) {
+      const targetTime = vtime + drift;
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (src) {
+          const bitrate = 1.2 * 1024 * 1024;
+          const startByte = Math.max(0, Math.floor(targetTime * bitrate) - (4 * 1024 * 1024));
+          const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+        }
+      } catch(e){}
+      const buf = isTimeBuffered(targetTime);
+      if (buf) {
+        const safeTarget = clamp(targetTime, buf.start + 0.02, buf.end - 0.02);
+        try {
+          videoEl.pause();
+          videoEl.currentTime = safeTarget;
+          attemptBufferedRender(safeTarget, 4200).then((ok) => {
+            ensureAudioReady();
+            setTimeout(()=> { videoEl.play().catch(()=>{}); refreshAudioOffset(); }, 120);
+          });
+        } catch (e){}
+        return;
+      }
+    }
+// small drift -> gentle playbackRate correction (exponential smoothing)
+    const gain = 0.12;
+    let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
+    if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
+    emaRate = emaRate + (rawTargetRate - emaRate) * EMA_ALPHA;
+    const finalRate = clamp(emaRate, 0.94, 1.06);
+    if (Math.abs(videoEl.playbackRate - finalRate) > 0.0009) {
+      try { videoEl.playbackRate = finalRate; } catch(e){}
+    }
+    if (Math.abs(drift) > 0.8) refreshAudioOffset();
+  }
+
+  function startSyncLoop() {
+    if (syncInterval) return;
+    refreshAudioOffset();
+    syncInterval = setInterval(syncTick, POLL_MS);
+    setTimeout(syncTick, 40);
+  }
+  function stopSyncLoop() {
+    if (!syncInterval) return;
+    clearInterval(syncInterval);
+    syncInterval = null;
+    try { videoEl.playbackRate = 1.0; } catch(e){}
+    emaRate = 1.0;
+  }
+
+  // seeking handlers: pause sync and suspend audio pipeline temporarily
+  let savedGainValue = 1.0;
+  videoEl.addEventListener('seeking', () => {
+    stopSyncLoop();
+    if (audioContext && audioContext.state === 'running') audioContext.suspend().catch(()=>{});
+    try { videoEl.pause(); } catch(e){}
+  });
+
+  videoEl.addEventListener('seeked', async () => {
+    try {
+      if (gainNode && audioContext) {
+        savedGainValue = gainNode.gain.value || 1.0;
+        gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+        gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      }
+    } catch(e){}
+
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (src) {
+        const bitrate = 1.2 * 1024 * 1024;
+        const startByte = Math.max(0, Math.floor(videoEl.currentTime * bitrate) - (2 * 1024 * 1024));
+        const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+        seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+      }
+    } catch(e){}
+
+    const target = videoEl.currentTime;
+    const ok = await attemptBufferedRender(target, 5200);
+
+    ensureAudioReady();
+    refreshAudioOffset();
+
+    setTimeout(() => {
+      try {
+        if (gainNode && audioContext) {
+          gainNode.gain.setValueAtTime(savedGainValue || 1.0, audioContext.currentTime);
+        }
+      } catch(e){}
+      startSyncLoop();
+      syncTick();
+    }, 140);
+  });
+
+  // play / playing listeners to (re)start sync loop
+  videoEl.addEventListener('play', () => {
+    ensureAudioReady();
+    refreshAudioOffset();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('playing', () => {
+    refreshAudioOffset();
+    syncTick();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('ratechange', () => { emaRate = clamp(videoEl.playbackRate, 0.5, 2.0); });
+
+  // wrap setupAudioContext to start sync after audio created
+  const _origSetup = setupAudioContext;
+  setupAudioContext = function() {
+    _origSetup();
+    setTimeout(() => { try { refreshAudioOffset(); startSyncLoop(); } catch(e){} }, 80);
+  };
+
+  // optional helper: attachSource (HLS/DASH/fallback)
+  async function attachSource(src) {
+    if (!src) return;
+    if (src.endsWith('.m3u8') && window.Hls && Hls.isSupported()) {
+      try {
+        const hls = new Hls({ lowLatencyMode: true, maxBufferLength: 30 });
+        hls.loadSource(src);
+        hls.attachMedia(videoEl);
+        console.log('HLS attached');
+        return;
+      } catch (e) { console.warn('HLS attach failed', e); }
+    }
+    if (src.endsWith('.mpd') && window.dashjs) {
+      try {
+        const playerDash = dashjs.MediaPlayer().create();
+        playerDash.initialize(videoEl, src, false);
+        console.log('DASH attached');
+        return;
+      } catch (e) { console.warn('DASH attach failed', e); }
+    }
+    videoEl.src = src;
+  }
+  window.playerAttach = attachSource;
+
+  console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
+});
+</script>
