@@ -200,26 +200,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /********************************************************
    * Smart MKV prefetch (keeps your original behavior)
+   * -> REPLACED/ENHANCED: MKV Low-Buffering System (Heroku-friendly)
    ********************************************************/
+
+  // mkvPrefetchConfig: conservative defaults tuned for low-bandwidth hosts (Heroku/free)
+  const mkvPrefetchConfig = {
+    initialMB: 2,        // initial prefetch on load (2 MB)
+    seekMB: 4,           // chunk to prefetch on long seeks (~4 MB)
+    maxMB: 6,            // maximum allowed in adaptive increase (~6 MB)
+    hintKB: 128,         // background hint size (in KB)
+    seekThresholdSec: 8, // consider long seek if > 8s
+    controllerTimeout: 6000
+  };
+
+  // helper: convert MB to bytes
+  function MB(n){ return Math.floor(n * 1024 * 1024); }
+  function KB(n){ return Math.floor(n * 1024); }
+
+  // lightweight MKV prefetch using worker (so it doesn't block main-thread heavy fetch)
   async function smartMKVPrefetch() {
     try {
       const src = videoEl.currentSrc || videoEl.src;
       if (!src || !src.endsWith('.mkv')) return;
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(src, {
-        headers: { Range: 'bytes=0-8388607' },
-        signal: controller.signal
-      });
-      if (res && res.ok) console.log('✅ Initial MKV Prefetch (8MB)');
+
+      // use worker to prefetch initial small chunk
+      try {
+        const start = 0;
+        const end = MB(mkvPrefetchConfig.initialMB) - 1;
+        prefetchWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${start}-${end}`, timeout: mkvPrefetchConfig.controllerTimeout });
+        console.log(`✅ MKV lightweight initial prefetch requested (${mkvPrefetchConfig.initialMB}MB)`);
+      } catch(e){ console.warn('MKV prefetch worker error', e); }
     } catch (e) {
       console.log('ℹ️ MKV Prefetch skipped:', e && e.message);
     }
   }
+  // call immediately (non-blocking)
   smartMKVPrefetch();
 
   /********************************************************
-   * MKV long-seek optimizer (keeps your original logic)
+   * MKV long-seek optimizer (VLC-like logic) — enhanced
+   * - Uses workers to prefetch around seek targets
+   * - Conservative sizes (4MB) to suit Heroku/free-tier
    ********************************************************/
   let lastSeek = 0;
   let isPrefetching = false;
@@ -228,29 +249,73 @@ document.addEventListener('DOMContentLoaded', () => {
     const currentTime = videoEl.currentTime;
     const jumpDiff = Math.abs(currentTime - lastSeek);
     lastSeek = currentTime;
+
+    // Only run MKV long-seek optimization on MKV sources
     if (!(videoEl.currentSrc && videoEl.currentSrc.endsWith('.mkv'))) return;
     if (isPrefetching) return;
-    if (jumpDiff < 8) return;
+
+    // Only act on significant jumps
+    if (jumpDiff < mkvPrefetchConfig.seekThresholdSec) return;
 
     isPrefetching = true;
-    const src = videoEl.currentSrc;
-    const bitrateEstimate = 1.2 * 1024 * 1024;
-    const startByte = Math.max(0, Math.floor(currentTime * bitrateEstimate));
-    const prefetchSize = currentTime > 1800 ? 16 * 1024 * 1024 : 8 * 1024 * 1024;
-    const endByte = startByte + prefetchSize;
     try {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(src, {
-        headers: { Range: `bytes=${startByte}-${endByte}` },
-        signal: controller.signal
-      });
-      if (res && res.ok) console.log(`🎯 MKV Prefetched ${Math.round(prefetchSize/1048576)}MB @${Math.round(startByte/1048576)}MB`);
+      const src = videoEl.currentSrc;
+      // conservative bitrate estimate
+      const bitrateEstimate = 1.0 * 1024 * 1024; // 1 MB/s estimate
+      const targetStart = Math.max(0, Math.floor(currentTime * bitrateEstimate) - MB(Math.floor(mkvPrefetchConfig.seekMB/2)));
+      const prefetchSize = MB(mkvPrefetchConfig.seekMB);
+      const startByte = Math.max(0, targetStart);
+      const endByte = startByte + prefetchSize - 1;
+
+      // Use worker to prefetch (non-blocking)
+      seekWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${startByte}-${endByte}`, timeout: mkvPrefetchConfig.controllerTimeout });
+      console.log(`🎯 MKV seek prefetch (worker) requested: ${Math.round(prefetchSize/1048576)}MB @ ${Math.round(startByte/1048576)}MB`);
     } catch (e) {
       console.log('⚠️ MKV seek prefetch failed:', e && e.message);
+    } finally {
+      setTimeout(() => (isPrefetching = false), 900); // small cool-down
     }
-    setTimeout(() => (isPrefetching = false), 800);
   });
+
+  /********************************************************
+   * Background MKV hinting (very small, Heroku-friendly)
+   * - Sends tiny range hints periodically (~128 KB) to keep TCP/TLS
+   *   connection warm and reduce latency on subsequent requests
+   ********************************************************/
+  let mkvHintInterval = null;
+  function startMKVHints() {
+    if (mkvHintInterval) return;
+    mkvHintInterval = setInterval(async () => {
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (!src || !src.endsWith('.mkv')) return;
+        // pick a small range near currentTime + lookahead (so it warms nearby bytes)
+        const lookaheadSec = Math.max(8, Math.floor(videoEl.currentTime + 8));
+        const bitrate = 1.0 * 1024 * 1024; // same conservative estimate
+        const bytePos = Math.max(0, Math.floor(lookaheadSec * bitrate));
+        const hintSize = KB(mkvPrefetchConfig.hintKB);
+        const start = Math.max(0, bytePos);
+        const end = start + hintSize - 1;
+        prefetchWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${start}-${end}`, timeout: 3000 });
+        // silent, no heavy logs to not flood console
+      } catch (e) { /* ignore */ }
+    }, 3500); // every ~3.5s (small but regular)
+  }
+  function stopMKVHints() {
+    if (mkvHintInterval) {
+      clearInterval(mkvHintInterval);
+      mkvHintInterval = null;
+    }
+  }
+  // Start MKV hints when video loaded & source is MKV
+  videoEl.addEventListener('loadedmetadata', () => {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (src && src.endsWith('.mkv')) startMKVHints();
+    } catch(e){}
+  });
+  // Stop hints on unload
+  window.addEventListener('beforeunload', () => stopMKVHints());
 
   /********************************************************
    * Intelligent resume & buffer stabilization (original)
@@ -597,8 +662,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
     }
-
-    // small drift -> gentle playbackRate correction (exponential smoothing)
+// small drift -> gentle playbackRate correction (exponential smoothing)
     const gain = 0.12;
     let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
     if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
@@ -715,6 +779,7 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
 });
 </script>
+
 
 
 
