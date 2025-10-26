@@ -1,1 +1,140 @@
+// Background prefetch loop
+  let backgroundPrefetchInterval = null;
+  function startBackgroundPrefetch() {
+    if (backgroundPrefetchInterval) return;
+    backgroundPrefetchInterval = setInterval(async () => {
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (!src) return;
+        await net.estimate(src).catch(()=>{});
+        const lookahead = Math.max(10, Math.floor(videoEl.currentTime + 8));
+        const { start, end } = adaptive.getChunk(lookahead, src, false);
+        prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:5000 });
+      } catch(e){}
+    }, 1000);
+  }
+  function stopBackgroundPrefetch() {
+    if (backgroundPrefetchInterval) {
+      clearInterval(backgroundPrefetchInterval); backgroundPrefetchInterval = null;
+    }
+  }
+  startBackgroundPrefetch();
 
+  // initial adaptive attempt
+  (async function initAdaptive() {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (!src) return;
+      await net.estimate(src);
+      const { start, end } = adaptive.getChunk(0, src, false);
+      prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:5000 });
+    } catch(e){}
+  })();
+
+  // MSE scaffold (best-effort) for MP4
+  let msSupported = !!window.MediaSource;
+  let mseController = { enabled:false, mediaSource:null, sourceBuffer:null, appendQueue:[] };
+
+  async function tryInitMSE() {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (!src || !msSupported) return;
+      if (!src.endsWith('.mp4')) return;
+      const mime = 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"';
+      if (!MediaSource.isTypeSupported(mime)) return;
+      const ms = new MediaSource();
+      mseController.mediaSource = ms;
+      videoEl.src = URL.createObjectURL(ms);
+      ms.addEventListener('sourceopen', async () => {
+        try {
+          const sb = ms.addSourceBuffer(mime);
+          mseController.sourceBuffer = sb; mseController.enabled = true;
+          const res = await smartFetchRange(src, 'bytes=0-1258291', 2, 6000).catch(()=>null);
+          if (!res) return;
+          const ab = await res.arrayBuffer();
+          const appendChunk = () => {
+            if (!mseController.sourceBuffer || mseController.sourceBuffer.updating) { setTimeout(appendChunk, 50); return; }
+            try { mseController.sourceBuffer.appendBuffer(ab); console.log('MSE: appended initial chunk'); } catch(err){ console.log('MSE append error', err); }
+          }; appendChunk();
+        } catch(err){ console.log('MSE open error', err); }
+      });
+    } catch(e){ console.log('MSE init skipped', e); }
+  }
+  tryInitMSE();
+
+  // cleanup on unload
+  window.addEventListener('beforeunload', () => {
+    try { prefetchWorker.terminate(); seekWorker.terminate(); } catch(e){}
+    stopBackgroundPrefetch();
+    if (mseController.mediaSource) { try { mseController.mediaSource.endOfStream(); } catch(e){} }
+  });
+
+  /************************************************************************
+   * AUDIO + VIDEO SYNC: robust synchronizer (keeps audio/video in sync)
+   ************************************************************************/
+
+  let audioOffset = 0;
+  let syncInterval = null;
+  let emaRate = 1.0;
+  const EMA_ALPHA = 0.18;
+  const POLL_MS = 120;
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function isTimeBuffered(time) {
+    try {
+      const buf = videoEl.buffered;
+      for (let i = 0; i < buf.length; i++) {
+        if (time >= buf.start(i) - 0.05 && time <= buf.end(i) + 0.05) {
+          return { start: buf.start(i), end: buf.end(i) };
+        }
+      }
+    } catch(e){}
+    return null;
+  }
+
+  function refreshAudioOffset() {
+    if (!audioContext) return;
+    try {
+      audioOffset = audioContext.currentTime - videoEl.currentTime;
+      const outLatency = (audioContext.outputLatency || audioContext.baseLatency || 0);
+      audioOffset -= outLatency;
+    } catch(e){}
+  }
+
+  function ensureAudioReady() {
+    if (!audioContext) return;
+    audioContext.resume().catch(()=>{});
+    setTimeout(refreshAudioOffset, 60);
+  }
+
+  function attemptBufferedRender(targetTime, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      let settled = false;
+      if (isTimeBuffered(targetTime)) return resolve(true);
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+        try {
+          const frameCheck = () => {
+            try {
+              videoEl.requestVideoFrameCallback(() => {
+                if (!settled && (isTimeBuffered(targetTime) || videoEl.currentTime >= (targetTime - 0.1))) {
+                  settled = true; resolve(true);
+                } else if (!settled && (performance.now() - start > timeoutMs)) {
+                  settled = true; resolve(false);
+                } else if (!settled) frameCheck();
+              });
+            } catch(e){}
+          };
+          frameCheck();
+        } catch(e){}
+      }
+      const poll = setInterval(() => {
+        if (isTimeBuffered(targetTime) || videoEl.readyState >= 3 || (performance.now() - start > timeoutMs)) {
+          clearInterval(poll);
+          if (!settled) { settled = true; resolve(isTimeBuffered(targetTime) || videoEl.readyState >= 3); }
+        }
+      }, 100);
+      setTimeout(() => { if (!settled) { settled = true; clearInterval(poll); resolve(false); } }, timeoutMs + 120);
+    });
+  }
