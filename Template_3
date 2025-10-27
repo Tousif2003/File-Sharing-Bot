@@ -121,18 +121,44 @@
         </video>
     </div>
 
-    <!-- Stream Options -->
-<p class="fancy-text">ꜱᴛʀᴇᴀᴍ ᴏᴘᴛɪᴏɴꜱ</p>
-
-<style>
-.fancy-text {
-  font-weight: bold;
-  font-size: 1rem;
-  color: #ff66cc; /* pink */
-}
+<!-- Stream Options -->  <div class="note-wrapper">  
+  <p class="fancy-text">  
+    ✦ ɴᴏᴛᴇ: ᴀʟᴡᴀʏꜱ ᴜꜱᴇ ᴠʟᴄ ᴘʟᴀʏᴇʀ ꜰᴏʀ ꜱᴍᴏᴏᴛʜ ꜱᴛʀᴇᴀᴍɪɴɢ ᴀɴᴅ ᴀʟʟ ᴀᴜᴅɪᴏ ꜱᴜᴘᴘᴏʀᴛ ✦  
+  </p>  
+</div>  <!-- ✅ Stable, Custom Delay + Instant Smooth Scroll -->  <style>  
+:root {  
+  --delay-time: 3s; /* ⏳ Change this to 0s, 1s, 2s, etc. */  
+}  
+  
+.note-wrapper {  
+  overflow: hidden;  
+  white-space: nowrap;  
+  box-sizing: border-box;  
+  padding: 6px 0;  
+  position: relative;  
+}  
+  
+.fancy-text {  
+  display: inline-block;  
+  font-weight: 700;  
+  font-size: 1.4rem;  
+  color: #8a2be2;  
+  letter-spacing: 0.5px;  
+  will-change: transform;  
+  animation: scroll-text 20s linear infinite;  
+  animation-delay: calc(-5s + var(--delay-time)); /* ✅ custom + instant start */  
+}  
+  
+/* Smooth infinite scroll */  
+@keyframes scroll-text {  
+  0% { transform: translateX(100%); }  
+  100% { transform: translateX(-100%); }  
+}  
 </style>
-<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
 
+<!-- Stream Grid Layout -->
+<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+    
     <!-- VLC -->
     <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
        style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
@@ -280,40 +306,6 @@
 
   /* optional: make sure custom appended buttons don't inherit undesirable styles */
   .plyr__controls .landscape-btn { font: inherit; }
-
-  /* -------------------------
-     Neon player-toast (below player)
-     - bold, neo-green, 10s
-     ------------------------- */
-  .player-toast {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0, 255, 120, 0.06);
-    border: 1px solid rgba(0, 255, 120, 0.6);
-    color: #00ff88;
-    font-weight: 800;
-    text-shadow: 0 0 10px #00ff88;
-    padding: 14px 22px;
-    border-radius: 14px;
-    font-family: 'Segoe UI', Roboto, sans-serif;
-    font-size: 15px;
-    letter-spacing: 0.3px;
-    box-shadow: 0 0 18px rgba(0, 255, 120, 0.25);
-    z-index: 99999;
-    animation: toastFade 10s forwards;
-    text-align: center;
-    white-space: pre-line;
-    width: fit-content;
-    max-width: 94%;
-    backdrop-filter: blur(6px);
-  }
-
-  @keyframes toastFade {
-    0% { opacity: 0; transform: translate(-50%, 12px); }
-    10%, 90% { opacity: 1; transform: translate(-50%, 0); }
-    100% { opacity: 0; transform: translate(-50%, -12px); }
-  }
 </style>
 
 <script>
@@ -424,38 +416,15 @@ document.addEventListener('DOMContentLoaded', () => {
    *******************************/
   let audioContext = null;
   let gainNode = null;
-  // keep a reference to media source node if created by our code
-  let _mediaElementSourceNode = null;
-
   function setupAudioContext() {
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       try {
-        // Try to create source — might throw if already created elsewhere,
-        // so wrap in try/catch and fallback to captureStream below if needed.
-        try {
-          _mediaElementSourceNode = audioContext.createMediaElementSource(videoEl);
-        } catch (errMediaSrc) {
-          // Some players / libs create the MediaElementSource already which throws
-          // So we will fallback to captureStream (works in modern browsers)
-          try {
-            const stream = videoEl.captureStream ? videoEl.captureStream() : null;
-            if (stream) _mediaElementSourceNode = audioContext.createMediaStreamSource(stream);
-            else _mediaElementSourceNode = null;
-          } catch (e2) {
-            _mediaElementSourceNode = null;
-          }
-        }
-
+        const source = audioContext.createMediaElementSource(videoEl);
         gainNode = audioContext.createGain();
         gainNode.gain.value = 1.0; // normal by default
-
-        if (_mediaElementSourceNode) {
-          // connect chain: source -> gain -> destination
-          try { _mediaElementSourceNode.connect(gainNode); } catch(e) {}
-        }
-        try { gainNode.connect(audioContext.destination); } catch(e) {}
-
+        source.connect(gainNode);
+        gainNode.connect(audioContext.destination);
       } catch (e) {
         console.warn('AudioContext createMediaElementSource failed', e);
       }
@@ -475,192 +444,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('touchstart', ensureAudioPlayback, { passive: true, once: true });
   videoEl.addEventListener('play', ensureAudioPlayback);
   videoEl.addEventListener('playing', ensureAudioPlayback);
-
-  /********************************************************
-   * ---------- ADDED: audio codec + silent detection ----------
-   *
-   * Purpose:
-   *  - Detect if audio codec (EAC3/DTS/AC3) unsupported
-   *  - Do silent detection (RMS) via AnalyserNode within first ~600ms
-   *  - Detect muted (videoEl.muted / volume===0)
-   *  - Show neon popup below player (10s) only when problem exists
-   *
-   * Runs on first user 'play' gesture (idempotent)
-   ********************************************************/
-
-  let _audioIssueChecked = false; // run check once per load (idempotent)
-  function showPlayerToast(msg) {
-    // remove old popup if any
-    document.querySelectorAll('.player-toast').forEach(t => t.remove());
-    const parent = videoEl.parentElement || document.body;
-    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
-    const toast = document.createElement('div');
-    toast.className = 'player-toast';
-    toast.innerText = msg;
-    // append below video (compute top)
-    parent.appendChild(toast);
-    // set position
-    try {
-      toast.style.top = (videoEl.offsetHeight + 10) + 'px';
-    } catch(e) { toast.style.bottom = '20px'; }
-    // auto remove 10s
-    setTimeout(() => { toast.remove(); }, 10000);
-  }
-
-  function checkCanPlayTypes() {
-    const t = document.createElement('video');
-    const formats = {
-      'EAC3': 'audio/eac3',
-      'AC3': 'audio/ac3',
-      'DTS': 'audio/vnd.dts',
-      'Opus': 'audio/webm; codecs="opus"',
-      'FLAC': 'audio/flac',
-      'MP3': 'audio/mpeg'
-    };
-    const unsupported = [];
-    for (const [name, mime] of Object.entries(formats)) {
-      try {
-        const r = t.canPlayType(mime);
-        if (!r || r === '') unsupported.push(name);
-      } catch (e) {
-        unsupported.push(name);
-      }
-    }
-    return unsupported; // array of names not supported (may include common ones)
-  }
-
-  // Silent detection using AnalyserNode → returns Promise<boolean> (true if silent)
-  async function detectSilentAudio(timeoutMs = 700) {
-    try {
-      if (!audioContext) setupAudioContext();
-      if (!audioContext) return false; // cannot test
-
-      // create analyser and source connection; keep local references
-      const ac = audioContext;
-      let analyser = ac._playerAnalyserNode || null;
-      let localSource = null;
-
-      if (!analyser) {
-        analyser = ac.createAnalyser();
-        analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.3;
-        // try to obtain a source:
-        try {
-          if (!_mediaElementSourceNode) {
-            // maybe someone else created mediaElementSource earlier; try to create one
-            try { _mediaElementSourceNode = ac.createMediaElementSource(videoEl); } catch (e) { _mediaElementSourceNode = null; }
-          }
-        } catch(e) {}
-        if (_mediaElementSourceNode) {
-          try { _mediaElementSourceNode.connect(analyser); } catch(e){}
-          // Ensure analyser connects to gainNode so audio path stays intact
-          try { analyser.connect(gainNode || ac.destination); } catch(e){}
-        } else {
-          // fallback: use captureStream() to create a MediaStreamSource
-          try {
-            const stream = videoEl.captureStream ? videoEl.captureStream() : null;
-            if (stream) {
-              localSource = ac.createMediaStreamSource(stream);
-              try { localSource.connect(analyser); } catch(e){}
-              try { analyser.connect(gainNode || ac.destination); } catch(e){}
-            }
-          } catch(e) { /* ignore */ }
-        }
-        ac._playerAnalyserNode = analyser;
-      }
-
-      // collect samples for ~timeoutMs, compute RMS
-      const bufferLen = analyser.frequencyBinCount;
-      const data = new Uint8Array(bufferLen);
-      let running = true;
-      const start = performance.now();
-      let frames = 0;
-      let rmsSum = 0;
-
-      // small helper sample loop (non-blocking)
-      await new Promise((resolve) => {
-        function step() {
-          try {
-            analyser.getByteTimeDomainData(data);
-            // compute RMS
-            let sum = 0;
-            for (let i = 0; i < data.length; i++) {
-              const v = (data[i] - 128) / 128;
-              sum += v * v;
-            }
-            const rms = Math.sqrt(sum / data.length);
-            rmsSum += rms;
-            frames++;
-          } catch (e) {
-            // analyser may throw if disconnect happened
-          }
-          if (performance.now() - start < timeoutMs) {
-            requestAnimationFrame(step);
-          } else {
-            running = false;
-            resolve();
-          }
-        }
-        step();
-      });
-
-      const avgRms = frames > 0 ? (rmsSum / frames) : 0;
-      // console.debug('avgRms', avgRms, 'frames', frames);
-      // threshold determined by tests: <0.003 considered silent (tunable)
-      const SILENCE_THRESHOLD = 0.0035;
-      return avgRms <= SILENCE_THRESHOLD;
-    } catch (e) {
-      // If detection fails, assume not silent to avoid false positives
-      return false;
-    }
-  }
-
-  async function runAudioChecksOnPlay() {
-    if (_audioIssueChecked) return;
-    _audioIssueChecked = true;
-
-    // first: basic mute/volume check
-    const isMuted = videoEl.muted || (typeof videoEl.volume === 'number' && videoEl.volume === 0);
-    const unsupported = checkCanPlayTypes(); // array of unsupported names
-
-    // We only care about EAC3/DTS/AC3 specifically for codec-detection popup
-    const codecProblems = unsupported.filter(n => ['EAC3','DTS','AC3'].includes(n));
-
-    // If codec problems present, show popup (no need to run silent detector)
-    // BUT we'll still check mute first: if user intentionally muted, still show message
-    if (codecProblems.length > 0 || isMuted) {
-      let msg = '';
-      if (codecProblems.length > 0) {
-        msg += `⚠️ ʏᴏᴜʀ ʙʀᴏᴡꜱᴇʀ ᴅᴏᴇꜱɴ'ᴛ ꜱᴜᴘᴘᴏʀᴛ: ${codecProblems.join(', ')}\n\n`;
-        msg += `ᴘʟᴇᴀꜱᴇ ᴜsᴇ ᴠʟᴄ ᴏʀ ᴀɴ ᴀᴘᴘ ᴛʜᴀᴛ ᴅᴇᴄᴏᴅᴇs ᴛʜᴇꜱᴇ ᴀᴜᴅɪᴏꜱ.`;
-      }
-      if (isMuted) {
-        if (msg) msg += '\n\n';
-        msg += `ᴘʟᴇᴀꜱᴇ ᴜɴᴍᴜᴛᴇ ʏᴏᴜʀ ᴘʟᴀʏᴇʀ ᴏʀ ᴅᴇᴠɪᴄᴇ.`;
-      }
-      showPlayerToast(msg);
-      return;
-    }
-
-    // If codec looks OK and not muted, run silent detection to catch EAC3/DTS that decode to silence
-    const isSilent = await detectSilentAudio(700).catch(()=>false);
-    if (isSilent) {
-      const msg = `⚠️ ʏᴏᴜʀ ʙʀᴏᴡꜱᴇʀ ᴍᴀʏ ɴᴏᴛ ᴅᴇᴄᴏᴅᴇ ᴛʜɪs ᴀᴜᴅɪᴏ ꜰᴏʀᴍᴀᴛ (EAC3/DTS/AC3).\n\nᴘʟᴇᴀꜱᴇ ᴜsᴇ ᴠʟᴄ ᴏʀ ᴀɴ ᴀᴘᴘ ᴛʜᴀᴛ ᴅᴇᴄᴏᴅᴇs ᴛʜᴇꜱᴇ ᴀᴜᴅɪᴏꜱ.`;
-      showPlayerToast(msg);
-      return;
-    }
-
-    // else everything ok → no popup
-    return;
-  }
-
-  // Run check when user presses play (idempotent)
-  function onUserPlayForChecks() {
-    // run checks but don't block playback
-    runAudioChecksOnPlay().catch(()=>{});
-  }
-  // attach idempotent handler (run once per load)
-  videoEl.addEventListener('play', onUserPlayForChecks, { once: true });
 
   /********************************************************
    * Smart MKV prefetch (keeps your original behavior)
@@ -1085,7 +868,8 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { if (!settled) { settled = true; clearInterval(poll); resolve(false); } }, timeoutMs + 120);
     });
   }
-function syncTick() {
+
+  function syncTick() {
     if (!audioContext || videoEl.paused || videoEl.readyState < 2) {
       emaRate = 1.0;
       try { if (videoEl.playbackRate !== 1.0) videoEl.playbackRate = 1.0; } catch(e){}
@@ -1242,78 +1026,6 @@ function syncTick() {
   console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
 });
 </script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-
-<!-- ✅ Plyr CSS & JS -->
-<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
-<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
-
-<!-- ✅ HLS & DASH (optional adaptive) -->
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
-
-<            if (src) {
-          const bitrate = 1.2 * 1024 * 1024;
-          const startByte = Math.max(0, Math.floor(targetTime * bitrate) - (4 * 1024 * 1024));
-          const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
-          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
-        }
-      } catch(e){}
-      const buf = isTimeBuffered(targetTime);
-      if (buf) {
-        const safeTarget = clamp(targetTime, buf.start + 0.02, buf.end - 0.02);
-        try {
-          videoEl.pause();
-          videoEl.currentTime = safeTarget;
-          attemptBufferedRender(safeTarget, 4200).then((ok) => {
-            ensureAudioReady();
-            setTimeout(()=> { videoEl.play().catch(()=>{}); refreshAudioOffset(); }, 120);
-          });
-        } catch (e){}
-        return;
-      }
-    }
-// small drift -> gentle playbackRate correction (exponential smoothing)
-    const gain = 0.12;
-    let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
-    if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
-    emaRate = emaRate + (rawTargetRate - emaRate) * EMA_ALPHA;
-    const finalRate = clamp(emaRate, 0.94, 1.06);
-    if (Math.abs(videoEl.playbackRate - finalRate) > 0.0009) {
-      try { videoEl.playbackRate = finalRate; } catch(e){}
-    }
-    if (Math.abs(drift) > 0.8) refreshAudioOffset();
-  }
-
-  function startSyncLoop() {
-    if (syncInterval) return;
-    refreshAudioOffset();
-    syncInterval = setInterval(syncTick, POLL_MS);
-    setTimeout(syncTick, 40);
-  }
-  function stopSyncLoop() {
-    if (!syncInterval) return;
-    clearInterval(syncInterval);
-    syncInterval = null;
-    try { videoEl.playbackRate = 1.0; } catch(e){}
-    emaRate = 1.0;
-  }
-
-  // seeking handlers: pause sync and suspend audio pipeline temporarily
-  let savedGainValue = 1.0;
-  videoEl.addEventListener('seeking', () => {
-    stopSyncLoop();
-    if (audioContext && audioContext.state === 'running') audioContext.suspend().catch(()=>{});
-    try { videoEl.pause(); } catch(e){}
-  });
-
-  src = src;
-  }
-  window.playerAttach = attachSource;
-
-  console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
-});
-</script>
 <!-- Footer -->
 <footer>
     <p>
@@ -1325,6 +1037,16 @@ function syncTick() {
 
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
 
 
 
