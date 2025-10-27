@@ -219,7 +219,7 @@
 
 </div>
 
-  <!-- ✅ Font Awesome for icons -->
+<!-- ✅ Font Awesome for icons -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 
 <!-- ✅ Plyr CSS & JS -->
@@ -231,47 +231,231 @@
 <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
 
 <style>
-.plyr__control:focus {
-  outline: none;
-  -webkit-tap-highlight-color: transparent;
-}
+  /* user's original small focus tweak */
+  .plyr__control:focus {
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* --- sane stacking for Plyr controls (safe defaults) --- */
+  .plyr__controls {
+    position: relative;
+    z-index: 2 !important;            /* modest z-index so controls don't cover page elements */
+    pointer-events: auto !important;
+  }
+
+  /* keep big play overlay visually on top of video but not covering controls */
+  .plyr__play-large {
+    z-index: 4 !important;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: auto !important;
+  }
+
+  /* slightly reduce overlay on very small screens */
+  @media (max-width: 640px) {
+    .plyr__play-large { transform: translate(-50%, -60%) scale(0.95); }
+  }
+
+  /* landscape custom button style (single class) */
+  .landscape-btn {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:2px;
+    padding:5px 8px;
+    border-radius:8px;
+    background: transparent;
+    color: #fff;
+    margin-left:6px;
+    border: none;
+    cursor: pointer;
+  }
+
+  /* page helper classes (won't conflict if your page has its own styles) */
+  .req-player-wrap { width:100%; max-width:980px; }
+  .req-player-video { width:100%; border-radius:10px; display:block; }
+
+  /* optional: make sure custom appended buttons don't inherit undesirable styles */
+  .plyr__controls .landscape-btn { font: inherit; }
+
+  /* -------------------------
+     Neon player-toast (below player)
+     - bold, neo-green, 10s
+     ------------------------- */
+  .player-toast {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 255, 120, 0.06);
+    border: 1px solid rgba(0, 255, 120, 0.6);
+    color: #00ff88;
+    font-weight: 800;
+    text-shadow: 0 0 10px #00ff88;
+    padding: 14px 22px;
+    border-radius: 14px;
+    font-family: 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px;
+    letter-spacing: 0.3px;
+    box-shadow: 0 0 18px rgba(0, 255, 120, 0.25);
+    z-index: 99999;
+    animation: toastFade 10s forwards;
+    text-align: center;
+    white-space: pre-line;
+    width: fit-content;
+    max-width: 94%;
+    backdrop-filter: blur(6px);
+  }
+
+  @keyframes toastFade {
+    0% { opacity: 0; transform: translate(-50%, 12px); }
+    10%, 90% { opacity: 1; transform: translate(-50%, 0); }
+    100% { opacity: 0; transform: translate(-50%, -12px); }
+  }
 </style>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   /************************************************************************
-   * Final Player (original + advanced optimizations + sync fix)
-   * Controls restricted to: play-large, rewind, play, fast-forward,
-   * progress, current-time, duration, landscape
+   * Integrated player block
+   * - This block assumes your page already has a <video id="player"> element.
+   * - It preserves the full original advanced logic (prefetch, MSE, sync)
+   *   and inserts defensive fixes:
+   *     • Plyr init guard (prevents duplicate initialization)
+   *     • sane CSS stacking (controls/play-large)
+   *     • idempotent manual play/pause + single landscape append
    ************************************************************************/
 
+  // Grab the video element that you already have on the page
   const videoEl = document.querySelector('#player');
-  videoEl.setAttribute('preload', 'auto');
-  videoEl.setAttribute('playsinline', '');
-  videoEl.setAttribute('crossorigin', 'anonymous');
+  if (!videoEl) {
+    console.warn('req-player: #player element not found on page — player script aborted.');
+    return;
+  }
 
-  // Controls limited as requested
+  // Defensive attributes (ensure expected behavior)
+  try {
+    videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('crossorigin', 'anonymous');
+  } catch(e){ /* ignore */ }
+
+  // Controls limited as requested (keeps UI minimal)
   const CONTROLS = [
     'play-large','rewind','play','fast-forward','progress','current-time','duration'
   ];
 
-  // Initialize Plyr with limited controls
-  const player = new Plyr(videoEl, { controls: CONTROLS });
+  /******************************************************
+   * Plyr init guard: destroy any previous instance so we
+   * don't end up with duplicated controls or event handlers
+   ******************************************************/
+  if (window.__reqPlyrInstance) {
+    try { window.__reqPlyrInstance.destroy(); } catch(e) { /* ignore */ }
+    window.__reqPlyrInstance = null;
+  }
+  window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
+  const player = window.__reqPlyrInstance;
+
+  /*******************************
+   * ============================
+   * ✅ Manual Play/Pause Button Fix (idempotent)
+   * Inserted into player.on('ready') with landscape append guard
+   * ============================
+   *******************************/
+  player.on('ready', () => {
+    try {
+      const controls = player.elements && player.elements.controls;
+      if (!controls) return;
+
+      // -------------------------
+      // Manual Play/Pause Button Fix (idempotent)
+      // -------------------------
+      const smallPlaySel = '.plyr__control[data-plyr="play"], .plyr__control--play';
+      const smallPlayBtn = controls.querySelector(smallPlaySel);
+      if (smallPlayBtn && !smallPlayBtn._manualPlayBound) {
+        smallPlayBtn._manualPlayBound = true;
+        const handler = async (e) => {
+          try { if (e && e.preventDefault) e.preventDefault(); } catch(_) {}
+          try {
+            // prefer Plyr API: keep internal state correct
+            if (player && typeof player.play === 'function' && typeof player.pause === 'function') {
+              if (player.playing) await player.pause();
+              else await player.play();
+              return;
+            }
+          } catch(err) {
+            console.warn('Plyr API toggle error (fallback to native):', err);
+          }
+          // fallback to native element
+          try {
+            if (videoEl.paused) await videoEl.play();
+            else videoEl.pause();
+          } catch(err) { console.warn('Native play/pause failed:', err); }
+        };
+        smallPlayBtn.addEventListener('click', handler, { passive: false });
+        smallPlayBtn.addEventListener('touchstart', handler, { passive: false });
+      }
+
+      // -------------------------
+      // Append Landscape button only if not already appended
+      // -------------------------
+      if (typeof createLandscapeButton === 'function') {
+        if (!controls.querySelector('.landscape-btn')) {
+          const landscapeBtn = createLandscapeButton();
+          landscapeBtn.classList.add('landscape-btn');
+          controls.appendChild(landscapeBtn);
+        }
+      }
+
+      // Defensive: ensure controls container styling does not break layout
+      try {
+        controls.style.pointerEvents = 'auto';
+        if (!controls.style.zIndex) controls.style.zIndex = '2';
+      } catch(e){}
+    } catch (e) {
+      console.warn('Play button patch failed', e);
+    }
+  });
 
   /*******************************
    * AudioContext + basic pipeline
    *******************************/
   let audioContext = null;
   let gainNode = null;
+  // keep a reference to media source node if created by our code
+  let _mediaElementSourceNode = null;
+
   function setupAudioContext() {
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       try {
-        const source = audioContext.createMediaElementSource(videoEl);
+        // Try to create source — might throw if already created elsewhere,
+        // so wrap in try/catch and fallback to captureStream below if needed.
+        try {
+          _mediaElementSourceNode = audioContext.createMediaElementSource(videoEl);
+        } catch (errMediaSrc) {
+          // Some players / libs create the MediaElementSource already which throws
+          // So we will fallback to captureStream (works in modern browsers)
+          try {
+            const stream = videoEl.captureStream ? videoEl.captureStream() : null;
+            if (stream) _mediaElementSourceNode = audioContext.createMediaStreamSource(stream);
+            else _mediaElementSourceNode = null;
+          } catch (e2) {
+            _mediaElementSourceNode = null;
+          }
+        }
+
         gainNode = audioContext.createGain();
         gainNode.gain.value = 1.0; // normal by default
-        source.connect(gainNode);
-        gainNode.connect(audioContext.destination);
+
+        if (_mediaElementSourceNode) {
+          // connect chain: source -> gain -> destination
+          try { _mediaElementSourceNode.connect(gainNode); } catch(e) {}
+        }
+        try { gainNode.connect(audioContext.destination); } catch(e) {}
+
       } catch (e) {
         console.warn('AudioContext createMediaElementSource failed', e);
       }
@@ -293,27 +477,234 @@ document.addEventListener('DOMContentLoaded', () => {
   videoEl.addEventListener('playing', ensureAudioPlayback);
 
   /********************************************************
-   * Smart MKV prefetch (keeps your original behavior)
+   * ---------- ADDED: audio codec + silent detection ----------
+   *
+   * Purpose:
+   *  - Detect if audio codec (EAC3/DTS/AC3) unsupported
+   *  - Do silent detection (RMS) via AnalyserNode within first ~600ms
+   *  - Detect muted (videoEl.muted / volume===0)
+   *  - Show neon popup below player (10s) only when problem exists
+   *
+   * Runs on first user 'play' gesture (idempotent)
    ********************************************************/
+
+  let _audioIssueChecked = false; // run check once per load (idempotent)
+  function showPlayerToast(msg) {
+    // remove old popup if any
+    document.querySelectorAll('.player-toast').forEach(t => t.remove());
+    const parent = videoEl.parentElement || document.body;
+    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+    const toast = document.createElement('div');
+    toast.className = 'player-toast';
+    toast.innerText = msg;
+    // append below video (compute top)
+    parent.appendChild(toast);
+    // set position
+    try {
+      toast.style.top = (videoEl.offsetHeight + 10) + 'px';
+    } catch(e) { toast.style.bottom = '20px'; }
+    // auto remove 10s
+    setTimeout(() => { toast.remove(); }, 10000);
+  }
+
+  function checkCanPlayTypes() {
+    const t = document.createElement('video');
+    const formats = {
+      'EAC3': 'audio/eac3',
+      'AC3': 'audio/ac3',
+      'DTS': 'audio/vnd.dts',
+      'Opus': 'audio/webm; codecs="opus"',
+      'FLAC': 'audio/flac',
+      'MP3': 'audio/mpeg'
+    };
+    const unsupported = [];
+    for (const [name, mime] of Object.entries(formats)) {
+      try {
+        const r = t.canPlayType(mime);
+        if (!r || r === '') unsupported.push(name);
+      } catch (e) {
+        unsupported.push(name);
+      }
+    }
+    return unsupported; // array of names not supported (may include common ones)
+  }
+
+  // Silent detection using AnalyserNode → returns Promise<boolean> (true if silent)
+  async function detectSilentAudio(timeoutMs = 700) {
+    try {
+      if (!audioContext) setupAudioContext();
+      if (!audioContext) return false; // cannot test
+
+      // create analyser and source connection; keep local references
+      const ac = audioContext;
+      let analyser = ac._playerAnalyserNode || null;
+      let localSource = null;
+
+      if (!analyser) {
+        analyser = ac.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.3;
+        // try to obtain a source:
+        try {
+          if (!_mediaElementSourceNode) {
+            // maybe someone else created mediaElementSource earlier; try to create one
+            try { _mediaElementSourceNode = ac.createMediaElementSource(videoEl); } catch (e) { _mediaElementSourceNode = null; }
+          }
+        } catch(e) {}
+        if (_mediaElementSourceNode) {
+          try { _mediaElementSourceNode.connect(analyser); } catch(e){}
+          // Ensure analyser connects to gainNode so audio path stays intact
+          try { analyser.connect(gainNode || ac.destination); } catch(e){}
+        } else {
+          // fallback: use captureStream() to create a MediaStreamSource
+          try {
+            const stream = videoEl.captureStream ? videoEl.captureStream() : null;
+            if (stream) {
+              localSource = ac.createMediaStreamSource(stream);
+              try { localSource.connect(analyser); } catch(e){}
+              try { analyser.connect(gainNode || ac.destination); } catch(e){}
+            }
+          } catch(e) { /* ignore */ }
+        }
+        ac._playerAnalyserNode = analyser;
+      }
+
+      // collect samples for ~timeoutMs, compute RMS
+      const bufferLen = analyser.frequencyBinCount;
+      const data = new Uint8Array(bufferLen);
+      let running = true;
+      const start = performance.now();
+      let frames = 0;
+      let rmsSum = 0;
+
+      // small helper sample loop (non-blocking)
+      await new Promise((resolve) => {
+        function step() {
+          try {
+            analyser.getByteTimeDomainData(data);
+            // compute RMS
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+              const v = (data[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / data.length);
+            rmsSum += rms;
+            frames++;
+          } catch (e) {
+            // analyser may throw if disconnect happened
+          }
+          if (performance.now() - start < timeoutMs) {
+            requestAnimationFrame(step);
+          } else {
+            running = false;
+            resolve();
+          }
+        }
+        step();
+      });
+
+      const avgRms = frames > 0 ? (rmsSum / frames) : 0;
+      // console.debug('avgRms', avgRms, 'frames', frames);
+      // threshold determined by tests: <0.003 considered silent (tunable)
+      const SILENCE_THRESHOLD = 0.0035;
+      return avgRms <= SILENCE_THRESHOLD;
+    } catch (e) {
+      // If detection fails, assume not silent to avoid false positives
+      return false;
+    }
+  }
+
+  async function runAudioChecksOnPlay() {
+    if (_audioIssueChecked) return;
+    _audioIssueChecked = true;
+
+    // first: basic mute/volume check
+    const isMuted = videoEl.muted || (typeof videoEl.volume === 'number' && videoEl.volume === 0);
+    const unsupported = checkCanPlayTypes(); // array of unsupported names
+
+    // We only care about EAC3/DTS/AC3 specifically for codec-detection popup
+    const codecProblems = unsupported.filter(n => ['EAC3','DTS','AC3'].includes(n));
+
+    // If codec problems present, show popup (no need to run silent detector)
+    // BUT we'll still check mute first: if user intentionally muted, still show message
+    if (codecProblems.length > 0 || isMuted) {
+      let msg = '';
+      if (codecProblems.length > 0) {
+        msg += `⚠️ ʏᴏᴜʀ ʙʀᴏᴡꜱᴇʀ ᴅᴏᴇꜱɴ'ᴛ ꜱᴜᴘᴘᴏʀᴛ: ${codecProblems.join(', ')}\n\n`;
+        msg += `ᴘʟᴇᴀꜱᴇ ᴜsᴇ ᴠʟᴄ ᴏʀ ᴀɴ ᴀᴘᴘ ᴛʜᴀᴛ ᴅᴇᴄᴏᴅᴇs ᴛʜᴇꜱᴇ ᴀᴜᴅɪᴏꜱ.`;
+      }
+      if (isMuted) {
+        if (msg) msg += '\n\n';
+        msg += `ᴘʟᴇᴀꜱᴇ ᴜɴᴍᴜᴛᴇ ʏᴏᴜʀ ᴘʟᴀʏᴇʀ ᴏʀ ᴅᴇᴠɪᴄᴇ.`;
+      }
+      showPlayerToast(msg);
+      return;
+    }
+
+    // If codec looks OK and not muted, run silent detection to catch EAC3/DTS that decode to silence
+    const isSilent = await detectSilentAudio(700).catch(()=>false);
+    if (isSilent) {
+      const msg = `⚠️ ʏᴏᴜʀ ʙʀᴏᴡꜱᴇʀ ᴍᴀʏ ɴᴏᴛ ᴅᴇᴄᴏᴅᴇ ᴛʜɪs ᴀᴜᴅɪᴏ ꜰᴏʀᴍᴀᴛ (EAC3/DTS/AC3).\n\nᴘʟᴇᴀꜱᴇ ᴜsᴇ ᴠʟᴄ ᴏʀ ᴀɴ ᴀᴘᴘ ᴛʜᴀᴛ ᴅᴇᴄᴏᴅᴇs ᴛʜᴇꜱᴇ ᴀᴜᴅɪᴏꜱ.`;
+      showPlayerToast(msg);
+      return;
+    }
+
+    // else everything ok → no popup
+    return;
+  }
+
+  // Run check when user presses play (idempotent)
+  function onUserPlayForChecks() {
+    // run checks but don't block playback
+    runAudioChecksOnPlay().catch(()=>{});
+  }
+  // attach idempotent handler (run once per load)
+  videoEl.addEventListener('play', onUserPlayForChecks, { once: true });
+
+  /********************************************************
+   * Smart MKV prefetch (keeps your original behavior)
+   * -> REPLACED/ENHANCED: MKV Low-Buffering System (Heroku-friendly)
+   ********************************************************/
+
+  // mkvPrefetchConfig: conservative defaults tuned for low-bandwidth hosts (Heroku/free)
+  const mkvPrefetchConfig = {
+    initialMB: 2,        // initial prefetch on load (2 MB)
+    seekMB: 4,           // chunk to prefetch on long seeks (~4 MB)
+    maxMB: 6,            // maximum allowed in adaptive increase (~6 MB)
+    hintKB: 128,         // background hint size (in KB)
+    seekThresholdSec: 8, // consider long seek if > 8s
+    controllerTimeout: 6000
+  };
+
+  // helper: convert MB to bytes
+  function MB(n){ return Math.floor(n * 1024 * 1024); }
+  function KB(n){ return Math.floor(n * 1024); }
+
+  // lightweight MKV prefetch using worker (so it doesn't block main-thread heavy fetch)
   async function smartMKVPrefetch() {
     try {
       const src = videoEl.currentSrc || videoEl.src;
       if (!src || !src.endsWith('.mkv')) return;
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(src, {
-        headers: { Range: 'bytes=0-8388607' },
-        signal: controller.signal
-      });
-      if (res && res.ok) console.log('✅ Initial MKV Prefetch (8MB)');
+
+      // use worker to prefetch initial small chunk
+      try {
+        const start = 0;
+        const end = MB(mkvPrefetchConfig.initialMB) - 1;
+        prefetchWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${start}-${end}`, timeout: mkvPrefetchConfig.controllerTimeout });
+        console.log(`✅ MKV lightweight initial prefetch requested (${mkvPrefetchConfig.initialMB}MB)`);
+      } catch(e){ console.warn('MKV prefetch worker error', e); }
     } catch (e) {
       console.log('ℹ️ MKV Prefetch skipped:', e && e.message);
     }
   }
+  // call immediately (non-blocking)
   smartMKVPrefetch();
 
   /********************************************************
-   * MKV long-seek optimizer (keeps your original logic)
+   * MKV long-seek optimizer (VLC-like logic) — enhanced
+   * - Uses workers to prefetch around seek targets
+   * - Conservative sizes (4MB) to suit Heroku/free-tier
    ********************************************************/
   let lastSeek = 0;
   let isPrefetching = false;
@@ -322,29 +713,73 @@ document.addEventListener('DOMContentLoaded', () => {
     const currentTime = videoEl.currentTime;
     const jumpDiff = Math.abs(currentTime - lastSeek);
     lastSeek = currentTime;
+
+    // Only run MKV long-seek optimization on MKV sources
     if (!(videoEl.currentSrc && videoEl.currentSrc.endsWith('.mkv'))) return;
     if (isPrefetching) return;
-    if (jumpDiff < 8) return;
+
+    // Only act on significant jumps
+    if (jumpDiff < mkvPrefetchConfig.seekThresholdSec) return;
 
     isPrefetching = true;
-    const src = videoEl.currentSrc;
-    const bitrateEstimate = 1.2 * 1024 * 1024;
-    const startByte = Math.max(0, Math.floor(currentTime * bitrateEstimate));
-    const prefetchSize = currentTime > 1800 ? 16 * 1024 * 1024 : 8 * 1024 * 1024;
-    const endByte = startByte + prefetchSize;
     try {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(src, {
-        headers: { Range: `bytes=${startByte}-${endByte}` },
-        signal: controller.signal
-      });
-      if (res && res.ok) console.log(`🎯 MKV Prefetched ${Math.round(prefetchSize/1048576)}MB @${Math.round(startByte/1048576)}MB`);
+      const src = videoEl.currentSrc;
+      // conservative bitrate estimate
+      const bitrateEstimate = 1.0 * 1024 * 1024; // 1 MB/s estimate
+      const targetStart = Math.max(0, Math.floor(currentTime * bitrateEstimate) - MB(Math.floor(mkvPrefetchConfig.seekMB/2)));
+      const prefetchSize = MB(mkvPrefetchConfig.seekMB);
+      const startByte = Math.max(0, targetStart);
+      const endByte = startByte + prefetchSize - 1;
+
+      // Use worker to prefetch (non-blocking)
+      seekWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${startByte}-${endByte}`, timeout: mkvPrefetchConfig.controllerTimeout });
+      console.log(`🎯 MKV seek prefetch (worker) requested: ${Math.round(prefetchSize/1048576)}MB @ ${Math.round(startByte/1048576)}MB`);
     } catch (e) {
       console.log('⚠️ MKV seek prefetch failed:', e && e.message);
+    } finally {
+      setTimeout(() => (isPrefetching = false), 900); // small cool-down
     }
-    setTimeout(() => (isPrefetching = false), 800);
   });
+
+  /********************************************************
+   * Background MKV hinting (very small, Heroku-friendly)
+   * - Sends tiny range hints periodically (~128 KB) to keep TCP/TLS
+   *   connection warm and reduce latency on subsequent requests
+   ********************************************************/
+  let mkvHintInterval = null;
+  function startMKVHints() {
+    if (mkvHintInterval) return;
+    mkvHintInterval = setInterval(async () => {
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (!src || !src.endsWith('.mkv')) return;
+        // pick a small range near currentTime + lookahead (so it warms nearby bytes)
+        const lookaheadSec = Math.max(8, Math.floor(videoEl.currentTime + 8));
+        const bitrate = 1.0 * 1024 * 1024; // same conservative estimate
+        const bytePos = Math.max(0, Math.floor(lookaheadSec * bitrate));
+        const hintSize = KB(mkvPrefetchConfig.hintKB);
+        const start = Math.max(0, bytePos);
+        const end = start + hintSize - 1;
+        prefetchWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${start}-${end}`, timeout: 3000 });
+        // silent, no heavy logs to not flood console
+      } catch (e) { /* ignore */ }
+    }, 3500); // every ~3.5s (small but regular)
+  }
+  function stopMKVHints() {
+    if (mkvHintInterval) {
+      clearInterval(mkvHintInterval);
+      mkvHintInterval = null;
+    }
+  }
+  // Start MKV hints when video loaded & source is MKV
+  videoEl.addEventListener('loadedmetadata', () => {
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (src && src.endsWith('.mkv')) startMKVHints();
+    } catch(e){}
+  });
+  // Stop hints on unload
+  window.addEventListener('beforeunload', () => stopMKVHints());
 
   /********************************************************
    * Intelligent resume & buffer stabilization (original)
@@ -369,16 +804,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   /********************************************************
-   * Landscape (custom) button only — appended once Plyr ready
+   * Landscape (custom) button only — function; appended in ready()
    ********************************************************/
   function createLandscapeButton() {
     const btn = document.createElement('button');
-    btn.className = 'plyr__control';
+    btn.className = 'plyr__control landscape-btn';
     btn.type = 'button';
     Object.assign(btn.style, {
       display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
       fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'6px',
-      WebkitTapHighlightColor:'transparent'
+      WebkitTapHighlightColor:'transparent', background:'transparent', border:'none'
     });
     btn.innerHTML = `
       <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
@@ -408,16 +843,6 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', ensureAudioPlayback);
     return btn;
   }
-
-  player.on('ready', () => {
-    try {
-      const controls = player.elements.controls;
-      if (!controls) return;
-      // Append only the Landscape button (controls list already limited)
-      const landscapeBtn = createLandscapeButton();
-      controls.appendChild(landscapeBtn);
-    } catch(e){ console.warn('add landscape failed', e); }
-  });
 
   /************************************************************************
    * ADVANCED OPTIMIZATIONS (kept intact)
@@ -593,9 +1018,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /************************************************************************
    * AUDIO + VIDEO SYNC: robust synchronizer (keeps audio/video in sync)
-   * - measures audioContext.currentTime vs video.currentTime
-   * - small playbackRate adjustments for drift < ~0.4s
-   * - full resync (seek) for large drift
    ************************************************************************/
 
   let audioOffset = 0;
@@ -663,8 +1085,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { if (!settled) { settled = true; clearInterval(poll); resolve(false); } }, timeoutMs + 120);
     });
   }
-
-  function syncTick() {
+function syncTick() {
     if (!audioContext || videoEl.paused || videoEl.readyState < 2) {
       emaRate = 1.0;
       try { if (videoEl.playbackRate !== 1.0) videoEl.playbackRate = 1.0; } catch(e){}
@@ -704,8 +1125,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
     }
-
-    // small drift -> gentle playbackRate correction (exponential smoothing)
+// small drift -> gentle playbackRate correction (exponential smoothing)
     const gain = 0.12;
     let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
     if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
@@ -822,6 +1242,78 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
 });
 </script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<!-- ✅ HLS & DASH (optional adaptive) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+
+<            if (src) {
+          const bitrate = 1.2 * 1024 * 1024;
+          const startByte = Math.max(0, Math.floor(targetTime * bitrate) - (4 * 1024 * 1024));
+          const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+        }
+      } catch(e){}
+      const buf = isTimeBuffered(targetTime);
+      if (buf) {
+        const safeTarget = clamp(targetTime, buf.start + 0.02, buf.end - 0.02);
+        try {
+          videoEl.pause();
+          videoEl.currentTime = safeTarget;
+          attemptBufferedRender(safeTarget, 4200).then((ok) => {
+            ensureAudioReady();
+            setTimeout(()=> { videoEl.play().catch(()=>{}); refreshAudioOffset(); }, 120);
+          });
+        } catch (e){}
+        return;
+      }
+    }
+// small drift -> gentle playbackRate correction (exponential smoothing)
+    const gain = 0.12;
+    let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
+    if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
+    emaRate = emaRate + (rawTargetRate - emaRate) * EMA_ALPHA;
+    const finalRate = clamp(emaRate, 0.94, 1.06);
+    if (Math.abs(videoEl.playbackRate - finalRate) > 0.0009) {
+      try { videoEl.playbackRate = finalRate; } catch(e){}
+    }
+    if (Math.abs(drift) > 0.8) refreshAudioOffset();
+  }
+
+  function startSyncLoop() {
+    if (syncInterval) return;
+    refreshAudioOffset();
+    syncInterval = setInterval(syncTick, POLL_MS);
+    setTimeout(syncTick, 40);
+  }
+  function stopSyncLoop() {
+    if (!syncInterval) return;
+    clearInterval(syncInterval);
+    syncInterval = null;
+    try { videoEl.playbackRate = 1.0; } catch(e){}
+    emaRate = 1.0;
+  }
+
+  // seeking handlers: pause sync and suspend audio pipeline temporarily
+  let savedGainValue = 1.0;
+  videoEl.addEventListener('seeking', () => {
+    stopSyncLoop();
+    if (audioContext && audioContext.state === 'running') audioContext.suspend().catch(()=>{});
+    try { videoEl.pause(); } catch(e){}
+  });
+
+  src = src;
+  }
+  window.playerAttach = attachSource;
+
+  console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
+});
+</script>
 <!-- Footer -->
 <footer>
     <p>
@@ -833,5 +1325,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
+
+
+
+
+
 
 
