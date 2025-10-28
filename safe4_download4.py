@@ -1,129 +1,133 @@
 #!/usr/bin/env python3
 """
-Thunder/safe_download.py - Hybrid Fix Version (v2) + Debug-Enhanced
-
-Features:
-- Hybrid high-speed chunking (like original fast version)
-- Robust resume using .part files and offset metadata
-- Adaptive in_memory switching (psutil-based + speed-based)
-- Smart DC-aware client selection + client rotation on failures
-- DC recreate best-effort for MIGRATE errors (no unsupported kwargs)
-- Heartbeat and small keepalive writes when streaming to reduce 499
-- Stream-to-browser while saving to disk (stream_and_download)
-- download_file(message) returns final saved path
-- Detailed debug logging & crash context dump for postmortem
-- Pause / Resume / Cancel API
-- CLI test runner and optional websocket progress server (debug)
-- Designed for Heroku/Koyeb free-tier constraints (low-memory, short timeouts)
+Thunder/safe_download.py
+Option 1 implementation (background fast downloader).
+- Uses existing ByteStreamer (from your old repo)
+- Writes to .part files and supports resume
+- DC-aware client selection and client rotation on failure
+- Adaptive in_memory switching based on psutil
+- Async disk writes with aiofiles (if available)
+- CLI runner for quick testing and optional debug HTTP status app
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
+import sys
 import time
+import json
 import math
+import secrets
 import random
 import logging
+import asyncio
 import traceback
-import secrets
-import json
-import sys
-import signal
-from typing import Optional, Any, Dict, List, Tuple
 from contextlib import asynccontextmanager
+from typing import Optional, Any, Dict, Tuple, List
 
 from dotenv import load_dotenv
-from pyrogram import Client
-from pyrogram.errors import FloodWait, RPCError
-from pyrogram.raw.functions.upload import GetFile
-from pyrogram.raw.types import InputDocumentFileLocation, InputPhotoFileLocation
-from pyrogram.types import Message
 
-# optional extras
+# pyrogram imports
+from pyrogram import Client
+from pyrogram.types import Message
+from pyrogram.errors import FloodWait, RPCError
+
+# local imports (provided by your repo)
+# ByteStreamer and get_file_ids are expected to exist under Thunder.utils or similar
+# In your repo earlier they were in Adarsh.utils.custom_dl and Adarsh.utils.file_properties.
+try:
+    from Thunder.utils.custom_dl import ByteStreamer  # prefer new path
+    from Thunder.utils.file_properties import get_file_ids
+except Exception:
+    # fallback to old locations used previously
+    try:
+        from Adarsh.utils.custom_dl import ByteStreamer  # old repo path
+        from Adarsh.utils.file_properties import get_file_ids
+    except Exception:
+        ByteStreamer = None
+        get_file_ids = None
+
+# try aiofiles for non-blocking writes
+try:
+    import aiofiles
+except Exception:
+    aiofiles = None
+
+# optional psutil for memory checks
 try:
     import psutil
 except Exception:
     psutil = None
 
-# aiohttp optional for streaming + WS debug server
+# optional aiohttp for debug webserver
 try:
-    from aiohttp import web, WSCloseCode
+    from aiohttp import web
 except Exception:
     web = None
-    WSCloseCode = None
 
 load_dotenv("config.env")
 
-# Import existing multi_clients and work_loads from Thunder.bot
+# import multi_clients and work_loads from your bot loader
 try:
     from Thunder.bot import multi_clients, work_loads
 except Exception:
-    multi_clients = []
-    work_loads = {}
+    try:
+        from Adarsh.bot import multi_clients, work_loads
+    except Exception:
+        multi_clients = []
+        work_loads = {}
 
-# Import Var for env config
+# import Var if available
 try:
     from Thunder.vars import Var
 except Exception:
-    class Var:
-        DOWNLOAD_DIR = None
-        CHUNK_SIZE = 1024 * 1024
-        TIMEOUT = 30
-        MAX_RETRIES = 6
-        MAX_CONCURRENT_DOWNLOADS = 5
-        STALL_TIMEOUT = 60
-        DEFAULT_IN_MEMORY = False
-        WORKDIR = "/tmp"
+    try:
+        from Adarsh.vars import Var
+    except Exception:
+        class Var:
+            SAVE_DIR = None
+            CHUNK_SIZE = 4 * 1024 * 1024
+            TIMEOUT = 30
+            MAX_RETRIES = 6
+            MAX_CONCURRENT_DOWNLOADS = 4
+            STALL_TIMEOUT = 60
+            DEFAULT_IN_MEMORY = False
+            WORKDIR = "/tmp"
+            CACHE_SIZE = 64
 
 # -------------------------
-# Logging & Debugging Setup
+# Logging
 # -------------------------
-logger = logging.getLogger("Thunder.safe_download.v2")
+logger = logging.getLogger("Thunder.safe_download")
 if not logger.handlers:
     handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    handler.setFormatter(formatter)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(handler)
 logger.setLevel(os.getenv("THUNDER_LOG_LEVEL", "INFO"))
 
-# Create a debug file logger if requested
-DEBUG_LOG_FILE = os.getenv("DEBUG_LOG_FILE", "")
-if DEBUG_LOG_FILE:
-    fh = logging.FileHandler(DEBUG_LOG_FILE)
-    fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    logger.addHandler(fh)
-
 # -------------------------
-# Configuration
+# Config (env overrides)
 # -------------------------
-CHUNK_SIZE = int(getattr(Var, "CHUNK_SIZE", int(os.getenv("CHUNK_SIZE", 1024 * 1024))))  # default 1MB
-TIMEOUT = int(getattr(Var, "TIMEOUT", int(os.getenv("TIMEOUT", 30))))
-MAX_RETRIES = int(getattr(Var, "MAX_RETRIES", int(os.getenv("MAX_RETRIES", 6))))
-MAX_CONCURRENT_DOWNLOADS = int(getattr(Var, "MAX_CONCURRENT_DOWNLOADS", int(os.getenv("MAX_CONCURRENT_DOWNLOADS", 5))))
-STALL_TIMEOUT = int(getattr(Var, "STALL_TIMEOUT", int(os.getenv("STALL_TIMEOUT", 60))))
-DEFAULT_SAVE_DIR = getattr(Var, "DOWNLOAD_DIR", None) or ("/mnt/data/files" if os.path.exists("/mnt/data/files") else os.path.join(os.getcwd(), "downloads"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", getattr(Var, "CHUNK_SIZE", 4 * 1024 * 1024)))
+TIMEOUT = int(os.getenv("TIMEOUT", getattr(Var, "TIMEOUT", 30)))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", getattr(Var, "MAX_RETRIES", 6)))
+MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", getattr(Var, "MAX_CONCURRENT_DOWNLOADS", 4)))
+STALL_TIMEOUT = int(os.getenv("STALL_TIMEOUT", getattr(Var, "STALL_TIMEOUT", 60)))
+DEFAULT_SAVE_DIR = getattr(Var, "DOWNLOAD_DIR", None) or os.path.join(os.getcwd(), "downloads")
 SAVE_DIR = os.getenv("SAVE_DIR", DEFAULT_SAVE_DIR)
-USE_IN_MEMORY_DEFAULT = bool(getattr(Var, "DEFAULT_IN_MEMORY", os.getenv("DEFAULT_IN_MEMORY", "False").lower() in ("1", "true", "yes")))
+USE_IN_MEMORY_DEFAULT = bool(str(os.getenv("DEFAULT_IN_MEMORY", str(getattr(Var, "DEFAULT_IN_MEMORY", False)))).lower() in ("1","true","yes"))
 MEM_PRESSURE_PCT = float(os.getenv("MEM_PRESSURE_PCT", "80.0"))
-HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "15"))  # keepalive writes when streaming
-REFRESH_FILE_REF_INTERVAL = int(os.getenv("REFRESH_FILE_REF_INTERVAL", "60"))  # seconds
+REFRESH_FILE_REF_INTERVAL = int(os.getenv("REFRESH_FILE_REF_INTERVAL", "60"))
 
-# Ensure SAVE_DIR exists
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Semaphore
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
-
-# -------------------------
-# Runtime state
-# -------------------------
+file_write_locks: Dict[str, asyncio.Lock] = {}
 download_states: Dict[str, Dict[str, Any]] = {}
 download_state_lock = asyncio.Lock()
-ws_clients: List[Any] = []
 
 # -------------------------
-# Helper utilities
+# Helpers
 # -------------------------
 def sanitize_filename(name: Optional[str]) -> str:
     if not name:
@@ -136,12 +140,9 @@ def key_for_message(message: Message) -> str:
         chat = getattr(message, "chat", None)
         chat_id = chat.id if chat else getattr(message, "chat_id", None)
         mid = getattr(message, "message_id", None) or getattr(message, "id", None)
-        return f"{chat_id}:{mid}" if chat_id is not None and mid is not None else f"{mid or secrets.token_hex(6)}"
+        return f"{chat_id}:{mid}" if chat_id is not None and mid is not None else f"{mid or secrets.token_hex(8)}"
     except Exception:
         return secrets.token_hex(8)
-
-def jitter_sleep(base: float = 1.0, jitter: float = 1.0) -> float:
-    return base + random.random() * jitter
 
 def get_system_memory_percent() -> float:
     if psutil:
@@ -151,101 +152,60 @@ def get_system_memory_percent() -> float:
             return 0.0
     return 0.0
 
+def jitter_sleep(base: float = 1.0, jitter: float = 1.0) -> float:
+    return base + random.random() * jitter
+
 # -------------------------
-# Raw GetFile & location extraction
+# ByteStreamer wrapper helpers
 # -------------------------
-async def raw_getfile_chunk(client: Client, location_obj: Any, offset: int, limit: int) -> bytes:
-    """Invoke raw.upload.GetFile and return bytes (best-effort)."""
+async def get_streamer_for_client(client: Client) -> ByteStreamer:
+    """Return ByteStreamer instance bound to passed client (cached on client)."""
+    # store streamer on client to reuse sessions
+    st = getattr(client, "_byte_streamer", None)
+    if st is None:
+        if ByteStreamer is None:
+            raise RuntimeError("ByteStreamer not found in project. Provide Thunder.utils.custom_dl.ByteStreamer")
+        st = ByteStreamer(client)
+        setattr(client, "_byte_streamer", st)
+    return st
+
+# -------------------------
+# Choose best client by load + latency
+# -------------------------
+async def measure_client_latency(client: Client, timeout_s: float = 5.0) -> float:
     try:
-        req = GetFile(location=location_obj, offset=offset, limit=limit)
-        res = await client.invoke(req)
-        data = getattr(res, "bytes", None) or getattr(res, "file_bytes", None)
-        if data is None:
-            file_attr = getattr(res, "file", None)
-            if file_attr is not None and hasattr(file_attr, "bytes"):
-                data = getattr(file_attr, "bytes")
-        return data or b""
-    except Exception as e:
-        logger.debug(f"raw_getfile_chunk exception: {e}")
-        raise
-
-def extract_location_from_message(message: Message) -> Tuple[Optional[Any], int, Optional[str], Optional[int]]:
-    """Try to craft InputDocumentFileLocation/InputPhotoFileLocation from message internals."""
-    file_obj = getattr(message, "document", None) or getattr(message, "video", None) or getattr(message, "audio", None) or getattr(message, "photo", None)
-    if not file_obj:
-        return None, 0, None, None
-    suggested_name = getattr(file_obj, "file_name", None) or getattr(file_obj, "file_unique_id", None) or None
-    file_size = getattr(file_obj, "file_size", None) or getattr(file_obj, "size", None) or 0
-    detected_dc = None
-    raw = getattr(file_obj, "_raw", None) or getattr(file_obj, "__dict__", None)
-    if raw:
-        doc_id = getattr(raw, "id", None) or getattr(raw, "document_id", None)
-        access_hash = getattr(raw, "access_hash", None) or getattr(raw, "accessHash", None)
-        file_ref = getattr(raw, "file_reference", None)
-        dc_val = getattr(raw, "dc_id", None) or getattr(raw, "dc", None)
-        if dc_val:
-            try:
-                detected_dc = int(dc_val)
-            except Exception:
-                detected_dc = None
-        try:
-            if doc_id and access_hash and file_ref is not None:
-                loc = InputDocumentFileLocation(id=int(doc_id), access_hash=int(access_hash), file_reference=file_ref, thumb_size="")
-                return loc, file_size, suggested_name, detected_dc
-        except Exception:
-            pass
-        # photo fallback
-        photo_id = getattr(raw, "id", None) or getattr(raw, "photo_id", None)
-        photo_access = getattr(raw, "access_hash", None)
-        photo_ref = getattr(raw, "file_reference", None)
-        try:
-            if photo_id and photo_access and photo_ref is not None:
-                loc = InputPhotoFileLocation(id=int(photo_id), access_hash=int(photo_access), file_reference=photo_ref, thumb_size="")
-                return loc, file_size, suggested_name, detected_dc
-        except Exception:
-            pass
-    return None, file_size, suggested_name, detected_dc
-
-# -------------------------
-# Smart client selection (least-loaded + latency)
-# -------------------------
-async def measure_client_latency(client: Client, samples: int = 1) -> float:
-    latencies = []
-    for _ in range(samples):
-        try:
-            t0 = time.time()
-            await client.get_me()
-            latencies.append(time.time() - t0)
-        except Exception:
-            latencies.append(10.0)
-    return sum(latencies) / len(latencies) if latencies else 10.0
+        t0 = time.time()
+        await asyncio.wait_for(client.get_me(), timeout=timeout_s)
+        return time.time() - t0
+    except Exception:
+        return float("inf")
 
 async def choose_best_client(prefer_dc: Optional[int] = None) -> Tuple[int, Client]:
     if not work_loads:
         raise RuntimeError("No clients loaded")
-    sorted_idxs = sorted(work_loads.items(), key=lambda kv: kv[1])
-    candidate_count = max(1, min(len(sorted_idxs), 3))
-    candidates = [idx for idx, _ in sorted_idxs[:candidate_count]]
+    sorted_by_load = sorted(work_loads.items(), key=lambda x: x[1])
+    candidates = [idx for idx, _ in sorted_by_load[:max(1, min(len(sorted_by_load), 3))]]
+    # prefer DC if asked
     if prefer_dc is not None:
-        pref_matches = [i for i in candidates if f"dc{prefer_dc}" in getattr(multi_clients[i], "session_name", "")]
-        if pref_matches:
-            candidates = pref_matches + [c for c in candidates if c not in pref_matches]
-    coros = [measure_client_latency(multi_clients[i], samples=1) for i in candidates]
-    lat_res = await asyncio.gather(*coros, return_exceptions=True)
+        pref = [i for i in candidates if f"dc{prefer_dc}" in getattr(multi_clients[i], "session_name", "")]
+        if pref:
+            candidates = pref + [c for c in candidates if c not in pref]
+    lat_tasks = [measure_client_latency(multi_clients[i]) for i in candidates]
+    lat_vals = await asyncio.gather(*lat_tasks, return_exceptions=True)
     best_idx = candidates[0]
     best_lat = float("inf")
-    for i, r in zip(candidates, lat_res):
+    for i, lat in zip(candidates, lat_vals):
         try:
-            lat = float(r)
+            l = float(lat)
         except Exception:
-            lat = 10.0
-        if lat < best_lat:
-            best_lat = lat
+            l = float("inf")
+        if l < best_lat:
+            best_lat = l
             best_idx = i
     return best_idx, multi_clients[best_idx]
 
 # -------------------------
-# Download state APIs (pause/resume/cancel/status)
+# State APIs
 # -------------------------
 async def _init_state(key: str, info: Dict[str, Any]):
     async with download_state_lock:
@@ -277,7 +237,6 @@ async def pause_download(key: str) -> bool:
         st["pause_event"].clear()
         st["status"] = "paused"
         st["last_update"] = time.time()
-        logger.debug(f"pause_download: {key}")
         return True
 
 async def resume_download(key: str) -> bool:
@@ -288,7 +247,6 @@ async def resume_download(key: str) -> bool:
         st["pause_event"].set()
         st["status"] = "running"
         st["last_update"] = time.time()
-        logger.debug(f"resume_download: {key}")
         return True
 
 async def cancel_download(key: str) -> bool:
@@ -300,7 +258,6 @@ async def cancel_download(key: str) -> bool:
         st["pause_event"].set()
         st["status"] = "cancelling"
         st["last_update"] = time.time()
-        logger.debug(f"cancel_download: {key}")
         return True
 
 def get_state_snapshot(key: str) -> Dict[str, Any]:
@@ -311,26 +268,31 @@ def get_state_snapshot(key: str) -> Dict[str, Any]:
     return s
 
 # -------------------------
-# Re-fetch helper for FILE_REFERENCE_EXPIRED
+# Refresh helper for expired file_reference
 # -------------------------
 async def refetch_message_and_extract(client: Client, message: Message) -> Tuple[Message, Optional[Any], int, Optional[str], Optional[int]]:
     try:
         chat_id = getattr(message, "chat", None).id if getattr(message, "chat", None) else getattr(message, "chat_id", None)
         msg_id = getattr(message, "message_id", None) or getattr(message, "id", None)
         if chat_id is None or msg_id is None:
-            return message, *extract_location_from_message(message)
+            return message, None, 0, None, None
         fresh = await client.get_messages(chat_id, msg_id)
         if not fresh:
-            return message, *extract_location_from_message(message)
-        return fresh, *extract_location_from_message(fresh)
-    except Exception as e:
-        logger.debug(f"refetch_message_and_extract error: {e}")
-        return message, *extract_location_from_message(message)
+            return message, None, 0, None, None
+        # use get_file_ids helper to construct a FileId-like object and derive properties
+        file_id = await get_file_ids(client, chat_id, msg_id)
+        size = getattr(file_id, "file_size", 0)
+        name = getattr(file_id, "file_name", None)
+        dc = getattr(file_id, "dc_id", None)
+        # message object can be returned too
+        return fresh, file_id, size, name, dc
+    except Exception:
+        return message, None, 0, None, None
 
 # -------------------------
-# Core adaptive chunked download (v2): high-speed + stability
+# Core: download to disk using ByteStreamer (resume-capable)
 # -------------------------
-async def _adaptive_chunked_download(
+async def _download_to_disk(
     client: Client,
     message: Message,
     *,
@@ -344,21 +306,43 @@ async def _adaptive_chunked_download(
     prefer_dc: Optional[int] = None,
 ) -> str:
     """
-    Returns final file path after completing download.
-    Implements high-speed chunking (raw_getfile when possible) and robust resume.
+    Downloads the message -> saves to disk with .part and resume support.
+    Uses ByteStreamer to fetch exact byte ranges from Telegram (fast).
     """
-    location_obj, file_size, suggested_name, detected_dc = extract_location_from_message(message)
-    raw_name = suggested_name or getattr(getattr(message, "document", None) or getattr(message, "video", None) or getattr(message, "audio", None) or getattr(message, "photo", None), "file_name", None) or f"file_{secrets.token_hex(4)}"
+    # fetch file metadata using ByteStreamer/get_file_ids
+    # Determine chat_id and message id from message object
+    try:
+        chat = getattr(message, "chat", None)
+        chat_id = chat.id if chat else getattr(message, "chat_id", None)
+        msg_id = getattr(message, "message_id", None) or getattr(message, "id", None)
+    except Exception:
+        chat_id = None
+        msg_id = None
+
+    # Use get_file_ids to build file metadata if possible
+    file_id = None
+    file_size = 0
+    file_name = None
+    detected_dc = None
+    if get_file_ids is not None and chat_id is not None and msg_id is not None:
+        try:
+            file_id = await get_file_ids(client, chat_id, msg_id)
+            file_size = getattr(file_id, "file_size", 0) or 0
+            file_name = getattr(file_id, "file_name", None)
+            detected_dc = getattr(file_id, "dc_id", None)
+        except Exception:
+            file_id = None
+
+    # fallback names
+    raw_name = file_name or getattr(getattr(message, "document", None) or getattr(message, "video", None) or getattr(message, "audio", None) or getattr(message, "photo", None), "file_name", None) or f"file_{secrets.token_hex(4)}"
     filename = sanitize_filename(raw_name)
     os.makedirs(save_dir, exist_ok=True)
     final_path = os.path.join(save_dir, filename)
     part_path = final_path + ".part"
-    meta_path = final_path + ".meta.json"  # to store offset/last-update etc
+    meta_path = final_path + ".meta.json"
 
     if not key:
         key = key_for_message(message)
-
-    # init state
     await _init_state(key, {"size": file_size, "filename": filename, "message": message, "dc": detected_dc})
     state = download_states[key]
     state["status"] = "running"
@@ -367,7 +351,7 @@ async def _adaptive_chunked_download(
     state["filename"] = filename
     state["dc"] = detected_dc
 
-    # resume offset from part file or meta
+    # resume offset
     offset = 0
     if os.path.exists(part_path):
         try:
@@ -375,7 +359,6 @@ async def _adaptive_chunked_download(
         except Exception:
             offset = 0
     else:
-        # check meta if exists (safer)
         if os.path.exists(meta_path):
             try:
                 with open(meta_path, "r") as mf:
@@ -384,214 +367,204 @@ async def _adaptive_chunked_download(
             except Exception:
                 offset = 0
 
-    # if final exists and seems complete, return immediately
+    # if already finished
     if os.path.exists(final_path) and file_size and os.path.getsize(final_path) >= file_size:
         state["status"] = "finished"
         state["downloaded"] = os.path.getsize(final_path)
         state["progress"] = 100.0
         state["end_time"] = time.time()
-        logger.info(f"Already fully downloaded: {final_path}")
         return final_path
 
-    # decide initial in_memory
+    # determine in_memory preference
     auto_in_memory = USE_IN_MEMORY_DEFAULT if use_in_memory_override is None else use_in_memory_override
     system_mem = get_system_memory_percent()
     if use_in_memory_override is None:
-        if system_mem < (MEM_PRESSURE_PCT - 10) and file_size and file_size < (200 * 1024 * 1024):
+        if system_mem < (MEM_PRESSURE_PCT - 10) and file_size and file_size < (150 * 1024 * 1024):
             auto_in_memory = True
         elif system_mem >= MEM_PRESSURE_PCT:
             auto_in_memory = False
 
-    # speed & retry trackers
+    # state trackers
     speed_history: List[float] = []
     retries = 0
-    consecutive_empty = 0
     last_progress_time = time.time()
     backoff = 1.0
-    consecutive_timeouts = 0
     last_meta_write = time.time()
     REFRESH_INTERVAL = REFRESH_FILE_REF_INTERVAL
 
-    logger.info(f"START key={key} file={filename} size={file_size/1024/1024:.2f}MB dc={detected_dc} offset={offset} in_memory_start={auto_in_memory}")
+    logger.info(f"START key={key} file={filename} size={file_size/1024/1024:.2f}MB dc={detected_dc} offset={offset} in_memory={auto_in_memory}")
     state["debug"].append({"t": time.time(), "evt": "start", "offset": offset, "in_memory": auto_in_memory})
 
-    # if location is None -> fallback directly to download_media(in_memory=False) with resume unsupported
-    if location_obj is None:
-        logger.debug("No raw location - using fallback download_media(disk)")
-        tmp = part_path
-        fallback_attempts = 0
-        while True:
-            if state["cancel"]:
-                state["status"] = "cancelled"; raise asyncio.CancelledError("cancelled")
-            await state["pause_event"].wait()
-            try:
-                await asyncio.wait_for(client.download_media(message, file_name=tmp, in_memory=False), timeout=timeout)
-                try:
-                    os.replace(tmp, final_path)
-                except Exception:
-                    os.rename(tmp, final_path)
-                state["status"] = "finished"
-                state["downloaded"] = os.path.getsize(final_path)
-                state["progress"] = 100.0
-                state["end_time"] = time.time()
-                logger.info(f"Fallback download finished: {final_path}")
-                return final_path
-            except FloodWait as e:
-                logger.warning(f"FloodWait during fallback: {e.value}s")
-                await asyncio.sleep(e.value + 1)
-            except asyncio.TimeoutError:
-                fallback_attempts += 1
-                logger.warning(f"Fallback timeout {fallback_attempts}/{max_retries}")
-                if fallback_attempts >= max_retries:
-                    state["status"] = "failed"
-                    raise Exception("Fallback timed out repeatedly")
-                await asyncio.sleep(jitter_sleep(2,2))
-            except Exception as e:
-                fallback_attempts += 1
-                logger.warning(f"Fallback error: {e} (attempt {fallback_attempts})")
-                if fallback_attempts >= max_retries:
-                    state["status"] = "failed"; raise
-                await asyncio.sleep(jitter_sleep(2,2))
+    # open file lock
+    lock = file_write_locks.get(part_path)
+    if lock is None:
+        lock = asyncio.Lock()
+        file_write_locks[part_path] = lock
 
-    # determine client_idx if available
-    client_idx = None
-    try:
-        client_idx = multi_clients.index(client) if client in multi_clients else None
-    except Exception:
-        client_idx = None
+    # if we have a ByteStreamer and file_id, use it for precise chunk fetch
+    streamer = None
+    if file_id is not None and ByteStreamer is not None:
+        try:
+            streamer = await get_streamer_for_client(client)
+        except Exception:
+            streamer = None
 
-    # open part file for append/resume
+    # open part file (sync handle used for fsync), but prefer aiofiles for writes
     mode = "r+b" if os.path.exists(part_path) else "wb"
-    with open(part_path, mode) as f:
+    with open(part_path, mode) as f_sync:
         if os.path.exists(part_path):
-            f.seek(offset)
-            logger.info(f"Resuming from part at {offset} bytes")
+            f_sync.seek(offset)
         last_refetch_time = time.time()
+        client_idx = None
+        try:
+            client_idx = multi_clients.index(client) if client in multi_clients else None
+        except Exception:
+            client_idx = None
 
         while True:
-            # pause/cancel checks
             if state["cancel"]:
                 state["status"] = "cancelled"
-                logger.info(f"Download cancelled key={key}")
+                logger.info(f"Cancelled download key={key}")
                 raise asyncio.CancelledError("cancelled")
             await state["pause_event"].wait()
 
-            # done?
             if file_size and offset >= file_size:
                 break
 
-            # periodic file_reference refresh
+            # refresh file_reference periodically
             if time.time() - last_refetch_time > REFRESH_INTERVAL:
                 try:
-                    message, location_obj, file_size, suggested_name, detected_dc = await refetch_message_and_extract(client, message)
+                    fresh_msg, new_file_id, new_size, new_name, new_dc = await refetch_message_and_extract(client, message)
+                    if new_file_id:
+                        file_id = new_file_id
+                        file_size = new_size or file_size
+                        if not streamer:
+                            streamer = await get_streamer_for_client(client)
                     last_refetch_time = time.time()
-                    logger.debug("Periodic refetch of message to refresh file_reference")
-                except Exception as e:
-                    logger.debug(f"Periodic refetch failed: {e}")
+                    logger.debug("Refetched message to refresh file_reference")
+                except Exception:
+                    pass
 
             # stall detection
             if time.time() - last_progress_time > stall_timeout:
                 retries += 1
-                logger.warning(f"Stall detected (no progress in {stall_timeout}s) retry {retries}/{max_retries}")
+                logger.warning(f"Stall (no progress in {stall_timeout}s). retry {retries}/{max_retries}")
                 backoff = min(backoff * 2, 30)
                 await asyncio.sleep(jitter_sleep(backoff, 3))
                 last_progress_time = time.time()
                 if retries >= max_retries:
-                    # rotate client if possible instead of abort
+                    # rotate client if possible
                     if client_idx is not None and len(multi_clients) > 1:
                         new_idx = (client_idx + 1) % len(multi_clients)
-                        logger.warning(f"Rotating client due to stall: {client_idx} -> {new_idx}")
+                        logger.warning(f"Rotating client due to stall {client_idx} -> {new_idx}")
                         client_idx = new_idx
                         client = multi_clients[client_idx]
                         try:
                             await client.start()
                         except Exception:
-                            logger.debug("client.start after rotate failed")
+                            pass
                         retries = 0
                         backoff = 1.0
                         continue
                     state["status"] = "failed"
-                    raise Exception("Download stalled too many times")
+                    raise Exception("stalled too many times")
                 continue
 
             try:
                 t0 = time.time()
-                # choose raw or in_memory method
-                if not auto_in_memory and location_obj is not None:
-                    # raw chunk via GetFile
-                    chunk = await asyncio.wait_for(raw_getfile_chunk(client, location_obj, offset, chunk_size), timeout=timeout)
+                # Fetch chunk:
+                chunk = b""
+                if streamer and file_id is not None and (not auto_in_memory):
+                    # use ByteStreamer to fetch this one chunk at exact offset
+                    # ByteStreamer.yield_file is an async generator which yields chunks of size chunk_size
+                    # But we need to request starting offset. We can call yield_file with offset and part_count=1
+                    part_count = 1
+                    # The streamer yields raw bytes blocks; to fetch only one chunk, we can iterate once
+                    async for data in streamer.yield_file(file_id, multi_clients.index(client), offset, 0, None, part_count, chunk_size):
+                        chunk = data or b""
+                        break
+                    # if no data, chunk remains empty
                 else:
-                    # download in-memory full (or partial) and extract bytes
-                    memobj = await asyncio.wait_for(client.download_media(message, in_memory=True), timeout=timeout)
-                    if hasattr(memobj, "getbuffer"):
-                        chunk = memobj.getbuffer().tobytes()
+                    # fallback: use client.download_media to fetch whole file in-memory (only for small files or as fallback)
+                    mem = await asyncio.wait_for(client.download_media(message, in_memory=True), timeout=timeout)
+                    if hasattr(mem, "getbuffer"):
+                        chunk = mem.getbuffer().tobytes()
                     else:
-                        chunk = memobj or b""
+                        chunk = mem or b""
 
-                if not chunk or len(chunk) == 0:
-                    consecutive_empty += 1
+                if not chunk:
                     retries += 1
-                    logger.warning(f"Empty chunk at offset {offset} count={consecutive_empty} retries={retries}")
-                    state["debug"].append({"t": time.time(), "evt": "empty_chunk", "offset": offset, "count": consecutive_empty})
-                    if consecutive_empty >= 2:
-                        try:
-                            message, location_obj, file_size, suggested_name, detected_dc = await refetch_message_and_extract(client, message)
-                            logger.warning("Refetched message after empty chunk")
-                        except Exception:
-                            logger.debug("Refetch after empty chunk failed")
-                        consecutive_empty = 0
-                    await asyncio.sleep(jitter_sleep(1,1))
+                    logger.warning(f"Empty chunk at offset {offset}. retry {retries}/{max_retries}")
+                    await asyncio.sleep(jitter_sleep(0.5, 1.0))
                     if retries >= max_retries:
                         if client_idx is not None and len(multi_clients) > 1:
                             new_idx = (client_idx + 1) % len(multi_clients)
-                            logger.warning(f"Rotating client due to repeated empty chunks: {client_idx} -> {new_idx}")
+                            logger.warning(f"Rotating client due to empty chunks {client_idx} -> {new_idx}")
                             client_idx = new_idx
                             client = multi_clients[client_idx]
                             try:
                                 await client.start()
                             except Exception:
-                                logger.debug("rotate start failed")
-                            retries = 0; backoff = 1.0
+                                pass
+                            retries = 0
                             continue
                         state["status"] = "failed"
-                        raise Exception("Repeated empty chunks")
+                        raise Exception("repeated empty chunks")
                     continue
 
-                # write chunk
-                f.seek(offset)
-                f.write(chunk)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except Exception:
-                    pass
+                # write chunk to disk
+                written = 0
+                async with lock:
+                    if aiofiles:
+                        # use aiofiles to write at offset
+                        mode_af = 'r+b' if os.path.exists(part_path) else 'wb'
+                        async with aiofiles.open(part_path, mode=mode_af) as af:
+                            await af.seek(offset)
+                            await af.write(chunk)
+                            try:
+                                await af.flush()
+                            except Exception:
+                                pass
+                        # sync fsync via sync file descriptor
+                        try:
+                            f_sync.flush()
+                            os.fsync(f_sync.fileno())
+                        except Exception:
+                            pass
+                    else:
+                        f_sync.seek(offset)
+                        f_sync.write(chunk)
+                        f_sync.flush()
+                        try:
+                            os.fsync(f_sync.fileno())
+                        except Exception:
+                            pass
+                    written = len(chunk)
 
-                written = len(chunk)
                 offset += written
                 last_progress_time = time.time()
                 retries = 0
-                consecutive_empty = 0
-                consecutive_timeouts = 0
                 backoff = 1.0
 
                 elapsed = max(1e-6, time.time() - t0)
                 speed = (written / 1024 / 1024) / elapsed
                 speed_history.append(speed)
-                if len(speed_history) > 30:
+                if len(speed_history) > 40:
                     speed_history.pop(0)
                 avg_speed = sum(speed_history) / len(speed_history) if speed_history else speed
 
-                # update state and meta (write meta every 2s)
+                # update state
                 state["downloaded"] = offset
                 state["progress"] = (offset / file_size) * 100 if file_size else 0.0
                 state["speed_history"] = speed_history[-10:]
                 state["avg_speed"] = avg_speed
                 state["retries"] = retries
                 state["last_update"] = time.time()
-                state["debug"].append({"t": time.time(), "evt": "chunk_written", "offset": offset, "written": written, "speed": speed})
-                logger.info(f"⬇️ {state['progress']:.2f}% | {speed:.2f} MB/s | offset={offset/1024/1024:.2f}MB | in_memory={auto_in_memory}")
+                state["debug"].append({"t": time.time(), "evt": "chunk", "offset": offset, "written": written, "speed": speed})
 
-                # meta write
+                logger.info(f"⬇️ {state['progress']:.2f}% | {avg_speed:.2f} MB/s | offset={offset/1024/1024:.2f}MB | in_memory={auto_in_memory}")
+
+                # write meta every 2s
                 if time.time() - last_meta_write > 2:
                     try:
                         with open(meta_path, "w") as mf:
@@ -600,82 +573,28 @@ async def _adaptive_chunked_download(
                         pass
                     last_meta_write = time.time()
 
-                # adaptive in_memory switching: mem-based & speed-based
+                # adapt in_memory if memory pressure
                 mem_pct = get_system_memory_percent()
-                if mem_pct >= MEM_PRESSURE_PCT:
-                    if auto_in_memory:
-                        auto_in_memory = False
-                        logger.warning("Memory pressure detected -> switching to disk mode")
-                        state["debug"].append({"t": time.time(), "evt": "mem_switch_off", "mem_pct": mem_pct})
+                if mem_pct >= MEM_PRESSURE_PCT and auto_in_memory:
+                    auto_in_memory = False
+                    logger.warning("Memory pressure -> switching to disk mode")
                 else:
-                    if avg_speed < 0.5 or retries >= 2:
-                        if not auto_in_memory:
-                            auto_in_memory = True
-                            logger.warning("Low speed/retries -> enabling in_memory")
-                            state["debug"].append({"t": time.time(), "evt": "enable_in_memory", "avg_speed": avg_speed})
-                    elif avg_speed > 3.0 and retries == 0:
-                        if auto_in_memory:
-                            auto_in_memory = False
-                            logger.info("Speed stable -> disabling in_memory")
-                            state["debug"].append({"t": time.time(), "evt": "disable_in_memory", "avg_speed": avg_speed})
+                    if avg_speed < 0.5 and not auto_in_memory:
+                        auto_in_memory = True
+                        logger.info("Low avg speed -> enabling in_memory fallback")
 
             except asyncio.TimeoutError:
                 retries += 1
-                consecutive_timeouts += 1
-                backoff = min(backoff * 2, 30)
-                logger.warning(f"Chunk timeout at offset {offset}. retry {retries}/{max_retries}. backoff {backoff}s")
-                state["debug"].append({"t": time.time(), "evt": "timeout", "offset": offset, "retries": retries})
-                await asyncio.sleep(jitter_sleep(backoff, 2))
-                if consecutive_timeouts >= 2 and client_idx is not None and len(multi_clients) > 1:
-                    new_idx = (client_idx + 1) % len(multi_clients)
-                    logger.warning(f"Rotating client after repeated timeouts {client_idx} -> {new_idx}")
-                    client_idx = new_idx
-                    client = multi_clients[client_idx]
-                    try:
-                        await client.start()
-                    except Exception:
-                        logger.debug("rotate start failed after timeouts")
-                    try:
-                        message, location_obj, file_size, suggested_name, detected_dc = await refetch_message_and_extract(client, message)
-                    except Exception:
-                        pass
-                    consecutive_timeouts = 0
-                    retries = 0
-                    continue
+                logger.warning(f"Chunk timeout at offset {offset}. retry {retries}/{max_retries}")
+                await asyncio.sleep(jitter_sleep(1, 2))
                 if retries >= max_retries:
                     if not auto_in_memory:
-                        logger.warning("Final fallback: switching to in_memory for recovery")
                         auto_in_memory = True
+                        logger.warning("Switching to in_memory fallback after timeouts")
                         continue
-                    state["status"] = "failed"
-                    raise Exception("Chunk timeout: too many retries")
-            except FloodWait as e:
-                logger.warning(f"FloodWait {e.value}s - sleeping")
-                state["debug"].append({"t": time.time(), "evt": "floodwait", "value": e.value})
-                await asyncio.sleep(e.value + 1)
-                continue
-            except RPCError as e:
-                err = str(e).upper()
-                logger.warning(f"RPCError: {e}")
-                state["debug"].append({"t": time.time(), "evt": "rpc_error", "err": str(e)})
-                if "FILE_REFERENCE_EXPIRED" in err or "FILE_REFERENCE" in err:
-                    logger.warning("FILE_REFERENCE_EXPIRED detected - refetching message")
-                    try:
-                        message, location_obj, file_size, suggested_name, detected_dc = await refetch_message_and_extract(client, message)
-                    except Exception:
-                        logger.debug("Refetch failed after FILE_REFERENCE_EXPIRED")
-                    await asyncio.sleep(jitter_sleep(0.5, 1.0))
-                    continue
-                if "MIGRATE" in err or "PHONE_MIGRATE" in err or "NETWORK_MIGRATE" in err:
-                    logger.warning("DC migration RPCError - bubbling up for DC handling")
-                    raise
-                if "TIMEOUT" in err:
-                    retries += 1
-                    backoff = min(backoff * 2, 30)
-                    await asyncio.sleep(jitter_sleep(backoff, 2))
-                    if retries >= max_retries and client_idx is not None and len(multi_clients) > 1:
+                    if client_idx is not None and len(multi_clients) > 1:
                         new_idx = (client_idx + 1) % len(multi_clients)
-                        logger.warning(f"Rotating client after RPC TIMEOUTs {client_idx} -> {new_idx}")
+                        logger.warning(f"Rotating client after timeouts {client_idx} -> {new_idx}")
                         client_idx = new_idx
                         client = multi_clients[client_idx]
                         try:
@@ -684,20 +603,48 @@ async def _adaptive_chunked_download(
                             pass
                         retries = 0
                         continue
+                    state["status"] = "failed"
+                    raise Exception("chunk timeout too many times")
+            except FloodWait as e:
+                logger.warning(f"FloodWait {e.value}s - sleeping")
+                await asyncio.sleep(e.value + 1)
+                continue
+            except RPCError as e:
+                serr = str(e).upper()
+                logger.warning(f"RPCError: {e}")
+                if "FILE_REFERENCE_EXPIRED" in serr or "FILE_REFERENCE" in serr:
+                    logger.info("FILE_REFERENCE_EXPIRED -> refetching message")
+                    try:
+                        message, file_id, file_size, file_name, detected_dc = await refetch_message_and_extract(client, message)
+                        if file_id and not streamer:
+                            streamer = await get_streamer_for_client(client)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(jitter_sleep(0.5, 1.0))
                     continue
+                if "MIGRATE" in serr or "PHONE_MIGRATE" in serr or "NETWORK_MIGRATE" in serr:
+                    logger.warning("DC migrate error -> bubble up for DC handler")
+                    raise
                 retries += 1
-                backoff = min(backoff * 2, 30)
+                await asyncio.sleep(jitter_sleep(1, 2))
                 if retries >= max_retries:
+                    if client_idx is not None and len(multi_clients) > 1:
+                        new_idx = (client_idx + 1) % len(multi_clients)
+                        logger.warning(f"Rotating client after RPC errors {client_idx} -> {new_idx}")
+                        client_idx = new_idx
+                        client = multi_clients[client_idx]
+                        try:
+                            await client.start()
+                        except Exception:
+                            pass
+                        retries = 0
+                        continue
                     state["status"] = "failed"
                     raise
-                await asyncio.sleep(jitter_sleep(backoff, 2))
-                continue
             except Exception as e:
                 retries += 1
-                backoff = min(backoff * 2, 30)
                 logger.error(f"Unknown error during chunk: {e}")
                 traceback.print_exc()
-                state["debug"].append({"t": time.time(), "evt": "unknown_error", "err": str(e)})
                 if retries >= max_retries:
                     if client_idx is not None and len(multi_clients) > 1:
                         new_idx = (client_idx + 1) % len(multi_clients)
@@ -712,18 +659,18 @@ async def _adaptive_chunked_download(
                         continue
                     state["status"] = "failed"
                     raise
-                await asyncio.sleep(jitter_sleep(backoff, 2))
+                await asyncio.sleep(jitter_sleep(1, 2))
                 continue
 
-    # finalize atomic move
+    # finalize
     try:
         os.replace(part_path, final_path)
     except Exception:
         try:
             os.rename(part_path, final_path)
         except Exception as e:
-            logger.error(f"Finalize failed: {e}")
             state["status"] = "failed"
+            logger.error(f"Finalize failed: {e}")
             raise
 
     state["status"] = "finished"
@@ -731,7 +678,7 @@ async def _adaptive_chunked_download(
     state["downloaded"] = os.path.getsize(final_path) if os.path.exists(final_path) else offset
     state["progress"] = 100.0
     logger.info(f"Finished download key={key} path={final_path}")
-    # write final meta debug
+
     try:
         with open(final_path + ".meta.json", "w") as mf:
             json.dump({"finished": True, "end_time": state["end_time"], "debug": state.get("debug", [])[-50:]}, mf)
@@ -740,19 +687,18 @@ async def _adaptive_chunked_download(
     return final_path
 
 # -------------------------
-# DC-aware wrapper for MIGRATE errors (best-effort)
+# DC-aware wrapper to recreate client on migrate errors (best-effort)
 # -------------------------
-async def _download_with_dc_handling(client_index: int, client: Client, message: Message, **kwargs):
+async def _download_with_dc_handling(client_index: int, client: Client, message: Message, **kwargs) -> str:
     attempts = 0
     while True:
         try:
-            return await _adaptive_chunked_download(client, message, **kwargs)
+            return await _download_to_disk(client, message, **kwargs)
         except RPCError as e:
             s = str(e).upper()
             if "MIGRATE" in s or "PHONE_MIGRATE" in s or "NETWORK_MIGRATE" in s:
-                logger.warning(f"DC migration requested by Telegram: {e}")
-                # parse DC id
-                dc_id = getattr(e, "value", None) or getattr(e, "new_dc", None) or getattr(e, "dc_id", None)
+                logger.warning(f"DC migrate requested -> {e}")
+                dc_id = None
                 try:
                     import re
                     m = re.search(r"MIGRATE_(\d+)", str(e), re.IGNORECASE)
@@ -760,7 +706,6 @@ async def _download_with_dc_handling(client_index: int, client: Client, message:
                         dc_id = int(m.group(1))
                 except Exception:
                     pass
-                logger.info(f"Attempting to recreate client for DC {dc_id} (best-effort)")
                 try:
                     await client.stop()
                 except Exception:
@@ -782,16 +727,15 @@ async def _download_with_dc_handling(client_index: int, client: Client, message:
                     attempts += 1
                     if attempts >= MAX_RETRIES:
                         raise Exception("Too many DC recreate attempts")
-                    logger.info(f"Recreated client at index {client_index} for DC {dc_id}; retrying download")
                     continue
                 except Exception as ex:
-                    logger.error(f"Failed to recreate client for DC {dc_id}: {ex}")
+                    logger.error(f"Failed recreate client for DC {dc_id}: {ex}")
                     raise
             else:
                 raise
 
 # -------------------------
-# Public wrapper used by stream_routes.py
+# Public wrapper selecting client and running download
 # -------------------------
 @asynccontextmanager
 async def _track_workload_idx(idx: int):
@@ -858,160 +802,7 @@ async def download_file(message: Message, *,
                 raise
 
 # -------------------------
-# Stream while writing to disk: for aiohttp integration
-# -------------------------
-async def stream_and_download(message: Message, request: "web.Request", *,
-                              chunk_size: Optional[int] = None,
-                              timeout: Optional[int] = None,
-                              save_dir: Optional[str] = None,
-                              prefer_dc: Optional[int] = None) -> "web.StreamResponse":
-    """
-    Use this in stream_routes.py to both stream to browser and save to disk with resume.
-    If browser closes (499), the background download will continue on server.
-    """
-    if web is None:
-        raise RuntimeError("aiohttp not installed in environment")
-
-    chunk_size = chunk_size or CHUNK_SIZE
-    timeout = timeout or TIMEOUT
-    save_dir = save_dir or SAVE_DIR
-
-    key = key_for_message(message)
-    try:
-        if prefer_dc is not None:
-            idx, client = await choose_best_client(prefer_dc=prefer_dc)
-        else:
-            idx, client = await choose_best_client(prefer_dc=None)
-    except Exception:
-        idx = _get_optimal_client_index()
-        client = multi_clients[idx]
-
-    # start background download task
-    download_task = asyncio.create_task(download_file(message, chunk_size=chunk_size, timeout=timeout, save_dir=save_dir, prefer_dc=prefer_dc))
-
-    # prepare HTTP headers (force attachment)
-    _, file_size, suggested_name, _ = extract_location_from_message(message)
-    filename = sanitize_filename(suggested_name or f"file_{secrets.token_hex(4)}")
-    headers = {
-        "Content-Type": "application/octet-stream",
-        "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-    }
-    resp = web.StreamResponse(status=200, headers=headers)
-    await resp.prepare(request)
-
-    final_path = os.path.join(save_dir, filename)
-    part_path = final_path + ".part"
-
-    sent = 0
-    last_activity = time.time()
-    heartbeat = HEARTBEAT_INTERVAL
-
-    try:
-        while True:
-            # if client closed connection
-            if request.transport is None or request.transport.is_closing():
-                logger.info(f"Client closed during streaming for key={key}")
-                break
-
-            # stream final file if exists
-            if os.path.exists(final_path):
-                size = os.path.getsize(final_path)
-                with open(final_path, "rb") as rf:
-                    rf.seek(sent)
-                    while True:
-                        data = rf.read(chunk_size)
-                        if not data:
-                            break
-                        await resp.write(data)
-                        sent += len(data)
-                        last_activity = time.time()
-                await resp.write_eof()
-                return resp
-
-            # stream available bytes from .part
-            if os.path.exists(part_path):
-                cur = os.path.getsize(part_path)
-                if cur > sent:
-                    with open(part_path, "rb") as rf:
-                        rf.seek(sent)
-                        to_read = cur - sent
-                        while to_read > 0:
-                            block = rf.read(min(chunk_size, to_read))
-                            if not block:
-                                break
-                            try:
-                                await resp.write(block)
-                            except Exception as e:
-                                logger.debug(f"Stream write failed: {e}")
-                                raise
-                            sent += len(block)
-                            to_read -= len(block)
-                            last_activity = time.time()
-                    await asyncio.sleep(0)
-                    continue
-
-            # check background download task
-            if download_task.done():
-                exc = download_task.exception()
-                if exc:
-                    logger.error(f"Background download error for key={key}: {exc}")
-                    try:
-                        await resp.write_eof()
-                    except Exception:
-                        pass
-                    raise exc
-                # else wait for final file to exist and loop will stream it
-                await asyncio.sleep(0.2)
-                continue
-
-            # heartbeat if idle to keep connection open at load balancer
-            if time.time() - last_activity > heartbeat:
-                try:
-                    # some servers don't like empty writes; sending small whitespace may still be ignored, but we try
-                    await resp.write(b"")
-                except Exception:
-                    pass
-                last_activity = time.time()
-
-            await asyncio.sleep(0.4)
-
-    finally:
-        # don't cancel background download automatically; let it finish and save
-        if not download_task.done():
-            logger.info(f"Stream ended for key={key}. Background download continues to save file.")
-        # respond ended
-    return resp
-
-# -------------------------
-# Watchdog for clients
-# -------------------------
-async def _client_watchdog(client: Client, name: str, interval: int = 300):
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            await client.get_me()
-        except Exception:
-            logger.warning(f"Watchdog: client {name} disconnected; attempting restart")
-            try:
-                await client.stop()
-            except Exception:
-                pass
-            await asyncio.sleep(5)
-            try:
-                await client.start()
-                logger.info(f"Watchdog: restarted client {name}")
-            except Exception as e:
-                logger.error(f"Watchdog restart failed for {name}: {e}")
-
-async def start_watchdogs():
-    for i, c in enumerate(multi_clients):
-        asyncio.create_task(_client_watchdog(c, getattr(c, "session_name", f"client_{i}")))
-
-# -------------------------
-# Optional WS / HTTP debug server (very lightweight)
+# Optional debug HTTP status app (aiohttp)
 # -------------------------
 def make_debug_app():
     if web is None:
@@ -1019,32 +810,11 @@ def make_debug_app():
     app = web.Application()
     routes = web.RouteTableDef()
 
-    @routes.get("/ws")
-    async def ws_handler(request):
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-        ws_clients.append(ws)
-        logger.info("WS debug client connected")
-        try:
-            async for msg in ws:
-                if msg.type == web.WSMsgType.TEXT:
-                    try:
-                        data = json.loads(msg.data)
-                        if data.get("action") == "list":
-                            async with download_state_lock:
-                                snapshot = {k: get_state_snapshot(k) for k in download_states.keys()}
-                            await ws.send_str(json.dumps({"type": "list", "data": snapshot}))
-                    except Exception:
-                        await ws.send_str(json.dumps({"error": "invalid command"}))
-                elif msg.type == web.WSMsgType.ERROR:
-                    logger.warning(f"WS error: {ws.exception()}")
-        finally:
-            try:
-                ws_clients.remove(ws)
-            except Exception:
-                pass
-            logger.info("WS debug client disconnected")
-        return ws
+    @routes.get("/status")
+    async def status_all(request):
+        async with download_state_lock:
+            data = {k: get_state_snapshot(k) for k in download_states.keys()}
+        return web.json_response(data)
 
     @routes.get("/status/{key}")
     async def status_key(request):
@@ -1055,49 +825,34 @@ def make_debug_app():
             raise web.HTTPNotFound(text=json.dumps({"error": "not found"}), content_type="application/json")
         return web.json_response(st)
 
-    @routes.get("/status")
-    async def status_all(request):
-        async with download_state_lock:
-            data = {k: get_state_snapshot(k) for k in download_states.keys()}
-        return web.json_response(data)
-
     app.add_routes(routes)
     return app
 
 # -------------------------
-# CLI runner and main
+# CLI runner
 # -------------------------
 def _install_signal_handlers(loop):
     try:
+        import signal
         loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(_shutdown(loop)))
         loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(_shutdown(loop)))
     except Exception:
         pass
 
 async def _shutdown(loop):
-    logger.info("safe_download v2 shutting down...")
-    # close ws
-    if web and ws_clients:
-        for ws in list(ws_clients):
-            try:
-                await ws.close(code=WSCloseCode.GOING_AWAY, message=b"shutting down")
-            except Exception:
-                pass
+    logger.info("safe_download shutting down...")
     await asyncio.sleep(0.1)
     loop.stop()
 
 async def _cli_run(args):
     if not multi_clients:
-        logger.error("No multi_clients configured. Exiting.")
+        logger.error("No multi_clients available. Exiting.")
         return
-    # start first client
     client = multi_clients[0]
     await client.start()
     logger.info("Client started for CLI")
-
     if args.watchdogs:
         asyncio.create_task(start_watchdogs())
-
     if args.ws:
         if web is None:
             logger.error("aiohttp not installed; cannot start ws server")
@@ -1107,8 +862,7 @@ async def _cli_run(args):
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("DEBUG_WS_PORT", "8765")))
             await site.start()
-            logger.info(f"Debug WS server started at port {os.getenv('DEBUG_WS_PORT','8765')}")
-
+            logger.info(f"Debug WS server started on port {os.getenv('DEBUG_WS_PORT', '8765')}")
     if args.chat is None or args.msg is None:
         logger.info("No chat/msg provided; running in server mode for WS/debug")
         await asyncio.get_event_loop().create_future()
@@ -1130,24 +884,17 @@ async def _cli_run(args):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Thunder safe_download v2 - Hybrid Fix + Debug")
+    parser = argparse.ArgumentParser(description="Thunder safe_download (fast + resume)")
     parser.add_argument("--chat", type=int, help="chat id")
     parser.add_argument("--msg", type=int, help="message id")
     parser.add_argument("--output", type=str, default=SAVE_DIR, help="download directory")
     parser.add_argument("--chunk", type=int, default=CHUNK_SIZE, help="chunk size bytes")
     parser.add_argument("--timeout", type=int, default=TIMEOUT, help="per-chunk timeout")
     parser.add_argument("--retries", type=int, default=MAX_RETRIES, help="max retries per chunk")
-    parser.add_argument("--in-memory", choices=["auto", "true", "false"], default="auto", help="override in_memory")
-    parser.add_argument("--ws", action="store_true", help="start debug websocket server (port 8765)")
+    parser.add_argument("--ws", action="store_true", help="start debug WS")
     parser.add_argument("--watchdogs", action="store_true", help="start client watchdogs")
+    parser.add_argument("--in-memory", choices=["auto", "true", "false"], default="auto", help="override in_memory")
     args = parser.parse_args()
-
-    if args.in_memory == "true":
-        args.in_memory = "true"
-    elif args.in_memory == "false":
-        args.in_memory = "false"
-    else:
-        args.in_memory = "auto"
 
     loop = asyncio.get_event_loop()
     _install_signal_handlers(loop)
