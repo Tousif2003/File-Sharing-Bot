@@ -62,7 +62,20 @@
 </style>
 
 <script>
+document.body.addEventListener('click', () => {
+  const v = document.querySelector('#player');
+  if (v && v.paused) v.play().catch(()=>{});
+  if (window.AudioContext) {
+    try {
+      const a = new AudioContext();
+      a.resume();
+    } catch(e){}
+  }
+}, { once: true, passive: true });
+
 document.addEventListener('DOMContentLoaded', () => {
+  // ...tumhara existing player code...
+});
   /************************************************************************
    * Integrated player block
    * - This block assumes your page already has a <video id="player"> element.
