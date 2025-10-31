@@ -62,20 +62,7 @@
 </style>
 
 <script>
-document.body.addEventListener('click', () => {
-  const v = document.querySelector('#player');
-  if (v && v.paused) v.play().catch(()=>{});
-  if (window.AudioContext) {
-    try {
-      const a = new AudioContext();
-      a.resume();
-    } catch(e){}
-  }
-}, { once: true, passive: true });
-
 document.addEventListener('DOMContentLoaded', () => {
-  // ...tumhara existing player code...
-});
   /************************************************************************
    * Integrated player block
    * - This block assumes your page already has a <video id="player"> element.
@@ -86,35 +73,56 @@ document.addEventListener('DOMContentLoaded', () => {
    *     • idempotent manual play/pause + single landscape append
    ************************************************************************/
 
-  // Grab the video element that you already have on the page
-  const videoEl = document.querySelector('#player');
-  if (!videoEl) {
-    console.warn('req-player: #player element not found on page — player script aborted.');
-    return;
-  }
+  // 🎬 Grab the video element that you already have on the page
+const videoEl = document.querySelector('#player');
+if (!videoEl) {
+  console.warn('req-player: #player element not found on page — player script aborted.');
+  return;
+}
 
-  // Defensive attributes (ensure expected behavior)
+// ⚙️ Defensive attributes (ensure expected playback behavior)
+try {
+  // preload="auto" ensures browser starts buffering immediately
+  videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
+  videoEl.setAttribute('playsinline', '');
+  videoEl.setAttribute('crossorigin', 'anonymous');
+} catch (e) {
+  console.warn('req-player: failed to apply safe video attributes', e);
+}
+
+// 🎛️ Controls limited as requested (keeps UI minimal)
+const CONTROLS = [
+  'play-large', 'rewind', 'play', 'fast-forward',
+  'progress', 'current-time', 'duration'
+];
+
+/******************************************************
+ * 🧹 Plyr init guard: destroy any previous instance so we
+ * don't end up with duplicated controls or event handlers
+ ******************************************************/
+if (window.__reqPlyrInstance) {
+  try { window.__reqPlyrInstance.destroy(); } catch (e) { /* ignore */ }
+  window.__reqPlyrInstance = null;
+}
+
+// 🚀 Initialize Plyr instance
+window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
+const player = window.__reqPlyrInstance;
+
+// ✅ Force buffering kick-start (fixes 0.0s stuck / no playback issue)
+if (videoEl && videoEl.readyState === 0) {
   try {
-    videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
-    videoEl.setAttribute('playsinline', '');
-    videoEl.setAttribute('crossorigin', 'anonymous');
-  } catch(e){ /* ignore */ }
-
-  // Controls limited as requested (keeps UI minimal)
-  const CONTROLS = [
-    'play-large','rewind','play','fast-forward','progress','current-time','duration'
-  ];
-
-  /******************************************************
-   * Plyr init guard: destroy any previous instance so we
-   * don't end up with duplicated controls or event handlers
-   ******************************************************/
-  if (window.__reqPlyrInstance) {
-    try { window.__reqPlyrInstance.destroy(); } catch(e) { /* ignore */ }
-    window.__reqPlyrInstance = null;
+    videoEl.load();                 // Force reload of metadata + data
+    const playPromise = videoEl.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(() => {
+        console.warn('req-player: autoplay blocked, waiting for user gesture');
+      });
+    }
+  } catch (err) {
+    console.warn('req-player: buffering kick-start failed', err);
   }
-  window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
-  const player = window.__reqPlyrInstance;
+}
 
   /*******************************
    * ============================
@@ -792,3 +800,4 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
 });
 </script>
+
