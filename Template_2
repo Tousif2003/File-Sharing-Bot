@@ -36,6 +36,14 @@
             margin: 10px 0;
         }
 
+        /* 🔴 Clean Developer-Style Red Border – Square Shape */
+        #player,
+        .plyr {
+            border: 2px solid #e53935 !important; /* professional dark red */
+            border-radius: 6px; /* curve square edges */
+            box-shadow: none; /* no glow */
+        }
+
         #info-box {
             border: 1px solid #140cf0;
             border-radius: 10px;
@@ -113,26 +121,63 @@
         </marquee>
     </header>
 
-    <!-- Video Player -->
-    <div id="player-container">
-        <video id="player" playsinline preload="metadata" controlsList="nodownload" aria-label="Video player">
-            <source src="{{ src }}" type="video/mp4">
-            <p>Your browser does not support the video tag. Please <a href="{{ src }}" download>download the video</a> instead.</p>
-        </video>
-    </div>
+<!-- Video Player -->
+<div id="player-container">
+  <video
+    id="player"
+    playsinline
+    controls
+    preload="auto"
+    crossorigin="anonymous"
+    controlsList="nodownload"
+    aria-label="Video player"
+  >
+    <source src="{{ src }}" type="video/mp4">
+    <p>
+      Your browser does not support the video tag.
+      Please <a href="{{ src }}" download>download the video</a> instead.
+    </p>
+  </video>
+</div>
 
-    <!-- Stream Options -->
-<p class="fancy-text">ꜱᴛʀᴇᴀᴍ ᴏᴘᴛɪᴏɴꜱ</p>
-
-<style>
-.fancy-text {
-  font-weight: bold;
-  font-size: 1rem;
-  color: #ff66cc; /* pink */
-}
+<!-- Stream Options -->  <div class="note-wrapper">  
+  <p class="fancy-text">  
+    ✦ ɴᴏᴛᴇ: ᴀʟᴡᴀʏꜱ ᴜꜱᴇ ᴠʟᴄ ᴘʟᴀʏᴇʀ ꜰᴏʀ ꜱᴍᴏᴏᴛʜ ꜱᴛʀᴇᴀᴍɪɴɢ ᴀɴᴅ ᴀʟʟ ᴀᴜᴅɪᴏ ꜱᴜᴘᴘᴏʀᴛ ✦  
+  </p>  
+</div>  <!-- ✅ Stable, Custom Delay + Instant Smooth Scroll -->  <style>  
+:root {  
+  --delay-time: 3s; /* ⏳ Change this to 0s, 1s, 2s, etc. */  
+}  
+  
+.note-wrapper {  
+  overflow: hidden;  
+  white-space: nowrap;  
+  box-sizing: border-box;  
+  padding: 6px 0;  
+  position: relative;  
+}  
+  
+.fancy-text {  
+  display: inline-block;  
+  font-weight: 700;  
+  font-size: 1.4rem;  
+  color: #8a2be2;  
+  letter-spacing: 0.5px;  
+  will-change: transform;  
+  animation: scroll-text 20s linear infinite;  
+  animation-delay: calc(-5s + var(--delay-time)); /* ✅ custom + instant start */  
+}  
+  
+/* Smooth infinite scroll */  
+@keyframes scroll-text {  
+  0% { transform: translateX(100%); }  
+  100% { transform: translateX(-100%); }  
+}  
 </style>
-<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
 
+<!-- Stream Grid Layout -->
+<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+    
     <!-- VLC -->
     <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
        style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
@@ -294,35 +339,56 @@ document.addEventListener('DOMContentLoaded', () => {
    *     • idempotent manual play/pause + single landscape append
    ************************************************************************/
 
-  // Grab the video element that you already have on the page
-  const videoEl = document.querySelector('#player');
-  if (!videoEl) {
-    console.warn('req-player: #player element not found on page — player script aborted.');
-    return;
-  }
+  // 🎬 Grab the video element that you already have on the page
+const videoEl = document.querySelector('#player');
+if (!videoEl) {
+  console.warn('req-player: #player element not found on page — player script aborted.');
+  return;
+}
 
-  // Defensive attributes (ensure expected behavior)
+// ⚙️ Defensive attributes (ensure expected playback behavior)
+try {
+  // preload="auto" ensures browser starts buffering immediately
+  videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
+  videoEl.setAttribute('playsinline', '');
+  videoEl.setAttribute('crossorigin', 'anonymous');
+} catch (e) {
+  console.warn('req-player: failed to apply safe video attributes', e);
+}
+
+// 🎛️ Controls limited as requested (keeps UI minimal)
+const CONTROLS = [
+  'play-large', 'rewind', 'play', 'fast-forward',
+  'progress', 'current-time', 'duration'
+];
+
+/******************************************************
+ * 🧹 Plyr init guard: destroy any previous instance so we
+ * don't end up with duplicated controls or event handlers
+ ******************************************************/
+if (window.__reqPlyrInstance) {
+  try { window.__reqPlyrInstance.destroy(); } catch (e) { /* ignore */ }
+  window.__reqPlyrInstance = null;
+}
+
+// 🚀 Initialize Plyr instance
+window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
+const player = window.__reqPlyrInstance;
+
+// ✅ Force buffering kick-start (fixes 0.0s stuck / no playback issue)
+if (videoEl && videoEl.readyState === 0) {
   try {
-    videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
-    videoEl.setAttribute('playsinline', '');
-    videoEl.setAttribute('crossorigin', 'anonymous');
-  } catch(e){ /* ignore */ }
-
-  // Controls limited as requested (keeps UI minimal)
-  const CONTROLS = [
-    'play-large','rewind','play','fast-forward','progress','current-time','duration'
-  ];
-
-  /******************************************************
-   * Plyr init guard: destroy any previous instance so we
-   * don't end up with duplicated controls or event handlers
-   ******************************************************/
-  if (window.__reqPlyrInstance) {
-    try { window.__reqPlyrInstance.destroy(); } catch(e) { /* ignore */ }
-    window.__reqPlyrInstance = null;
+    videoEl.load();                 // Force reload of metadata + data
+    const playPromise = videoEl.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(() => {
+        console.warn('req-player: autoplay blocked, waiting for user gesture');
+      });
+    }
+  } catch (err) {
+    console.warn('req-player: buffering kick-start failed', err);
   }
-  window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
-  const player = window.__reqPlyrInstance;
+}
 
   /*******************************
    * ============================
@@ -1011,14 +1077,3 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
