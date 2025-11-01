@@ -212,9 +212,11 @@ async def media_delivery(request: web.Request):
                 "Content-Type": "application/octet-stream",  # always binary
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Accept-Ranges": "bytes",
-                "Cache-Control": "no-store, no-transform",
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Cache-Control": "public, max-age=31536000",
                 "Connection": "keep-alive",
                 "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "strict-origin-when-cross-origin",
                 "Content-Length": str(content_length),
             }
             if not full_range:
@@ -299,9 +301,6 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
-
-
-
 
 
 
