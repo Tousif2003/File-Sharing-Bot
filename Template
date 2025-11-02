@@ -1,11 +1,672 @@
-<!-- ✅ Font Awesome for icons -->  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">    <!-- ✅ Plyr CSS & JS -->    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">    
-<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>  <script>    
-  document.addEventListener('DOMContentLoaded', () => {    
-    const player = new Plyr('#player', {    
-      controls: [    
-        'play-large', 'rewind', 'play', 'fast-forward',    
-        'progress', 'current-time', 'duration',    
-      ]    
-    });    
-  });    
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta property="og:image" content="https://i.ibb.co/M8S0Zzj/live-streaming.png" itemprop="thumbnailUrl">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ heading }}</title>
+
+    <!-- Fonts & Icons (single include) -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway|Delius">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+
+    <!-- Plyr Video Player CSS (single include) -->
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+
+    <style>
+        /* --- kept original styles, minimal tidy-up --- */
+        body {
+            font-family: sans-serif;
+            font-size: 16px;
+            margin: 0;
+            padding: 0;
+            background: #fff;
+            color: #000;
+        }
+
+        marquee {
+            font-size: 22px;
+            color: black;
+            font-family: serif;
+        }
+
+        .set-container {
+            padding: 15px;
+        }
+
+        #player-container {
+            margin: 10px 0;
+        }
+
+        /* 🔴 Clean Developer-Style Red Border – Square Shape */
+        #player,
+        .plyr {
+            border: 2px solid #e53935 !important; /* professional dark red */
+            border-radius: 6px; /* curve square edges */
+            box-shadow: none; /* no glow */
+        }
+
+        #info-box {
+            border: 1px solid #140cf0;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            word-wrap: break-word;
+        }
+
+        .stream-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .stream-options a {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 5px 10px;
+            border-radius: 6px;
+            background-color: #2D76FF;
+            color: #fff;
+            transition: all 0.3s;
+        }
+
+        .stream-options a:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 8px 12px;
+            margin-bottom: 20px;
+            border-radius: 6px;
+            background-color: #28a745;
+            color: #fff;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .download-btn:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        footer {
+            font-size: 12px;
+            color: #7b89a3;
+            padding: 20px 10px 0 10px;
+            border-top: 1px solid #c2cee3;
+            text-align: center;
+        }
+
+        footer a {
+            color: red;
+            font-weight: bold;
+        }
+
+        /* Player full page area */
+        :root {
+          --player-max-height: 100vh;
+        }
+        .player-container {
+          width: 100%;
+          height: auto;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          position: relative;
+          overflow: hidden;
+        }
+        video#player {
+          width: 100%;
+          height: auto;
+          max-height: var(--player-max-height);
+          display: block;
+          background: transparent;
+        }
+
+        /* Landscape button */
+        .landscape-btn {
+          position: absolute;
+          bottom: 72px;
+          right: 16px;
+          background: rgba(0,0,0,0.6);
+          color: white;
+          border: none;
+          padding: 8px 10px;
+          border-radius: 8px;
+          cursor: pointer;
+          display: inline-flex;
+          gap: 8px;
+          align-items: center;
+          font-size: 14px;
+          user-select: none;
+          z-index: 50;
+        }
+        .landscape-btn:hover { background: rgba(255,255,255,0.12); }
+
+        .landscape-text {
+          position: absolute;
+          bottom: 16px;
+          right: 16px;
+          color: #fff;
+          font-size: 13px;
+          text-shadow: 0 0 4px rgba(0,0,0,0.6);
+          user-select: none;
+          z-index: 40;
+        }
+
+        /* Stream options grid appearance (used elsewhere too) */
+        .stream-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+        .stream-grid a { background-color:#f8f9ff; border-radius:12px; height:50px; display:flex; align-items:center; justify-content:center; box-shadow:0 0 8px rgba(0,0,0,0.08); overflow:hidden; transition:0.3s; }
+        .stream-grid a img { width:100%; height:100%; object-fit:contain; }
+        .player-buttons {
+            display:flex;
+            flex-wrap:wrap;
+            gap:10px;
+            justify-content:center;
+            margin-top:12px;
+        }
+        .player-buttons .btn { padding:10px 16px; border-radius:8px; color:#fff; text-decoration:none; font-weight:bold; display:inline-flex; align-items:center; gap:8px; }
+        .btn.vlc{ background:#f8a028; } .btn.x{ background:#2D76FF; } .btn.km{ background:#673ab7; } .btn.playit{ background:#009688; } .btn.download-main{ background:#2D76FF; box-shadow: 0 0 15px #2d76ff; padding:12px 18px; border-radius:12px; }
+
+        @media (max-width:520px){
+          .landscape-btn { bottom:62px; right:10px; padding:7px 9px; font-size:13px; }
+          .landscape-text { bottom:12px; right:10px; font-size:12px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="set-container">
+
+    <!-- Marquee Header (moved below main player as requested originally it was above) -->
+    <header>
+        <marquee bgcolor="#808080">
+            <div id="file-name">{{ file_name }}</div>
+        </marquee>
+    </header>
+    
+    <!-- ====== MAIN PLAYER - SINGLE INSTANCE (kept/placed at top) ====== -->
+    <div id="player-container" class="player-container">
+      <video
+        id="player"
+        playsinline
+        controls
+        preload="metadata"
+        crossorigin="anonymous"
+        controlsList="nodownload"
+        aria-label="Video player"
+      >
+        <source src="{{ src }}" type="video/mp4">
+        <p>
+          Your browser does not support the video tag.
+          Please <a href="{{ src }}" download>download the video</a> instead.
+        </p>
+      </video>
+
+      <!-- Landscape UI -->
+      <button class="landscape-btn" id="btn-landscape" title="Toggle landscape">
+        <i class="fas fa-mobile-screen fa-rotate-90"></i> Landscape
+      </button>
+
+      <div class="landscape-text" id="landscape-text">Rotate for Landscape Mode</div>
+    </div>
+    
+    <!-- ====== /MAIN PLAYER ====== -->
+
+  <!-- Stream Options -->  <div class="note-wrapper">  
+  <p class="fancy-text">  
+    ✦ ɴᴏᴛᴇ: ᴀʟᴡᴀʏꜱ ᴜꜱᴇ ᴠʟᴄ ᴘʟᴀʏᴇʀ ꜰᴏʀ ꜱᴍᴏᴏᴛʜ ꜱᴛʀᴇᴀᴍɪɴɢ ᴀɴᴅ ᴀʟʟ ᴀᴜᴅɪᴏ ꜱᴜᴘᴘᴏʀᴛ ✦  
+  </p>  
+</div>  <!-- ✅ Stable, Custom Delay + Instant Smooth Scroll -->  <style>  
+:root {  
+  --delay-time: 3s; /* ⏳ Change this to 0s, 1s, 2s, etc. */  
+}  
+  
+.note-wrapper {  
+  overflow: hidden;  
+  white-space: nowrap;  
+  box-sizing: border-box;  
+  padding: 6px 0;  
+  position: relative;  
+}  
+  
+.fancy-text {  
+  display: inline-block;  
+  font-weight: 700;  
+  font-size: 1.4rem;  
+  color: #8a2be2;  
+  letter-spacing: 0.5px;  
+  will-change: transform;  
+  animation: scroll-text 20s linear infinite;  
+  animation-delay: calc(-5s + var(--delay-time)); /* ✅ custom + instant start */  
+}  
+  
+/* Smooth infinite scroll */  
+@keyframes scroll-text {  
+  0% { transform: translateX(100%); }  
+  100% { transform: translateX(-100%); }  
+}  
+</style>
+
+    <!-- Stream Options Grid (original icons/links kept) -->
+    <div class="stream-options stream-grid" style="margin-top:12px;">
+        <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end">
+            <img src="https://i.ibb.co/GtnGhBV/videolan-vlc-logo-icon-170258.png" alt="VLC">
+        </a>
+
+        <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=video.player.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=video.player.videoplayer;end">
+            <img src="https://i.ibb.co/pByqt2ZK/x.png" alt="XPlayer">
+        </a>
+
+        <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.kmplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.kmplayer;end">
+            <img src="https://i.ibb.co/bjPYQjkZ/x.png" alt="KMPlayer">
+        </a>
+
+        <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.playit.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.playit.videoplayer;end">
+            <img src="https://i.ibb.co/JsDNHgz/c0C4vnAa.png" alt="Playit">
+        </a>
+    </div>
+   
+<!-- Download Button -->
+<a href="{{ src }}" download
+   style="display: flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; background-color: #2D76FF; color: #fff; border-radius: 12px; padding: 15px; margin-top: 15px; font-weight: bold; font-size: 18px; box-shadow: 0 0 15px #2d76ff; transition: all 0.3s;">
+    <i class="fas fa-download" style="font-size: 20px;"></i> Download Now
+</a>
+
+<style>
+/* Pop & Bounce effect */
+@keyframes popBounce {
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1.1); }
+  70% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+/* Base style for all buttons: visible but scaled down initially */
+.stream-options a,
+.card.card-body {
+  transform: scale(0.8); /* start smaller */
+  animation: popBounce 0.6s ease forwards;
+  animation-fill-mode: forwards;
+}
+
+/* Sequential animation: initial wait 1s, then each button 0.5s after previous */
+.stream-options a:nth-child(1),
+.card.card-body:nth-child(1) { animation-delay: 1s; }
+.stream-options a:nth-child(2),
+.card.card-body:nth-child(2) { animation-delay: 1.5s; }
+.stream-options a:nth-child(3),
+.card.card-body:nth-child(3) { animation-delay: 2s; }
+.stream-options a:nth-child(4),
+.card.card-body:nth-child(4) { animation-delay: 2.5s; }
+.stream-options a:nth-child(5),
+.card.card-body:nth-child(5) { animation-delay: 3s; }
+.stream-options a:nth-child(6),
+.card.card-body:nth-child(6) { animation-delay: 3.5s; }
+
+/* Remove old fade/slide effects */
+.fadeInLeft, .fadeInRight, .shakeX {
+  animation-name: none !important;
+}
+</style>
+    
+    <!-- Info Box (kept intact) -->
+    <div id="info-box">
+        <p style="font-size: 15px; color:#120e0e;">
+           <span style="color:#ff0000;"><u><b>𝐍𝐨𝐭𝐞</b></u></span> : ɪꜰ ʏᴏᴜ ꜰɪɴᴅ ᴀɴʏ ʙʀᴏᴋᴇɴ ʟɪɴᴋ ᴛʜᴇɴ ᴘʟᴇᴀsᴇ ʀᴇᴘᴏʀᴛ ᴛᴏ ᴍʏ 
+            <a href="https://telegram.me/FilmymodOwner_Bot" style="color: blue"><b>sᴜᴘᴘᴏʀᴛ ᴛᴇᴀᴍ</b></a>
+        </p>
+    </div>
+
+    <!-- Main Updates -->
+    <div class="mainupdates" style="text-align:center; margin-top:20px;">
+        <div style="margin-bottom: 10px;">𝐉𝐨𝐢𝐧 𝐎𝐮𝐫 𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐋 𝐅𝐨𝐫 𝐌𝐨𝐫𝐞 𝐔𝐏𝐃𝐀𝐓𝐄𝐒 💖</div>
+        <a href="https://telegram.me/FilmyMod123">
+            <img src="https://img.shields.io/badge/Updates- Channel -blueviolet?style=for-the-badge" alt="Channel">
+        </a>
+    </div>
+
+</div> <!-- .set-container -->
+
+<!-- Font Awesome / Plyr JS (single includes) -->
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    // Initialize Plyr (only once)
+    try {
+      const player = new Plyr("#player", {
+        controls: [
+          "play-large", "rewind", "play", "fast-forward",
+          "progress", "current-time", "duration"
+        ],
+        seekTime: 10
+      });
+      window._plyr = player;
+    } catch (e) {
+      console.warn('Plyr init failed', e);
+    }
+
+    const text = document.getElementById("landscape-text");
+    const btn = document.getElementById("btn-landscape");
+
+    async function lockToLandscape() {
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock("landscape");
+          text.textContent = "Landscape Mode Active";
+        } else {
+          try { alert("Screen orientation lock not supported on this device"); } catch(e){}
+        }
+      } catch (err) {
+        console.warn("⚠️ Orientation lock failed:", err);
+      }
+    }
+
+    btn && btn.addEventListener("click", lockToLandscape);
+
+    // Orientation detection
+    window.addEventListener("orientationchange", () => {
+      if (window.innerWidth > window.innerHeight) {
+        text.textContent = "Landscape Mode Active";
+      } else {
+        text.textContent = "Rotate for Landscape Mode";
+      }
+    });
+  });
 </script>
+
+<!-- ========= Thunder Helpers (non-destructive patches) ========= -->
+<script>
+  // (kept original thunder helpers — unchanged logic)
+  window._thunder = window._thunder || {};
+
+  function _thunder_terminate_seek_worker() {
+    try {
+      if (window.seekWorker && typeof window.seekWorker.terminate === 'function') {
+        try { window.seekWorker.terminate(); } catch (e) { console.warn('thunder: seekWorker.terminate() error', e); }
+      }
+    } catch (e) { console.warn('thunder: terminate_seek_worker failed', e); } finally { window.seekWorker = undefined; }
+  }
+  window._thunder_terminate_seek_worker = _thunder_terminate_seek_worker;
+
+  async function _thunder_safe_play(videoEl) {
+    try {
+      if (!videoEl) return;
+      if (videoEl.seeking) return;
+      if (videoEl.readyState < 2) { try { videoEl.load(); } catch(e){}; return; }
+      await videoEl.play().catch((e) => { console.debug('thunder: safe_play blocked', e); });
+    } catch (e) { console.warn('thunder: safe_play error', e); }
+  }
+  window._thunder_safe_play = _thunder_safe_play;
+
+  function _thunder_delayed_audio_resume(audioCtx, delayMs = 200) {
+    try {
+      if (!audioCtx) return;
+      setTimeout(async () => {
+        try { if (audioCtx.state === 'suspended') { await audioCtx.resume().catch(()=>{}); } } catch (err) { console.warn('thunder: audio resume failed', err); }
+      }, delayMs);
+    } catch (e) { console.warn('thunder: delayed_audio_resume error', e); }
+  }
+  window._thunder_delayed_audio_resume = _thunder_delayed_audio_resume;
+
+  async function _thunder_attemptBufferedRenderWrapper(target, timeoutMs=8000) {
+    if (typeof attemptBufferedRender === 'function') {
+      try { return await attemptBufferedRender(target, timeoutMs); } catch (e) { console.warn('thunder: attemptBufferedRender failed, fallback', e); return false; }
+    } else { return true; }
+  }
+  window._thunder_attemptBufferedRenderWrapper = _thunder_attemptBufferedRenderWrapper;
+
+  function _thunder_sleep(ms) { return new Promise((res) => setTimeout(res, ms)); }
+  window._thunder_sleep = _thunder_sleep;
+
+  window._thunder_debug = window._thunder_debug || false;
+  function _tlog(...args) { if (window._thunder_debug) console.info('[thunder]', ...args); }
+  window._tlog = _tlog;
+</script>
+
+<!-- ========= Player init + MSE + Prefetch skeleton (kept intact) ========= -->
+<script>
+  (function () {
+    const VIDEO_SELECTOR = '#player';
+    const CHUNK_SIZE = 1 * 1024 * 1024;
+    const FLUSH_INTERVAL_MS = 7000;
+    const STREAM_RETRY_DELAY_MS = 800;
+
+    const videoEl = document.querySelector(VIDEO_SELECTOR);
+    const btnLandscape = document.getElementById('btn-landscape');
+    const txtLandscape = document.getElementById('landscape-text');
+
+    // Plyr init is already done earlier — keep defensive init
+    try {
+      if (videoEl && typeof Plyr !== 'undefined' && !window._plyr) {
+        window._plyr = new Plyr(videoEl);
+      }
+    } catch(e){ console.warn('thunder: Plyr defensive init failed', e); }
+
+    function _update_landscape_text() {
+      if (window.innerWidth > window.innerHeight) {
+        txtLandscape && (txtLandscape.textContent = 'Landscape Mode Active');
+      } else {
+        txtLandscape && (txtLandscape.textContent = 'Rotate for Landscape Mode');
+      }
+    }
+    _update_landscape_text();
+    window.addEventListener('orientationchange', _update_landscape_text);
+    window.addEventListener('resize', _update_landscape_text);
+
+    async function _on_landscape_click() {
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          try { await screen.orientation.lock('landscape'); txtLandscape && (txtLandscape.textContent = 'Landscape Mode Active'); }
+          catch (err) { console.warn('thunder: orientation.lock failed', err); try { alert('Rotation lock not supported on this device'); } catch(e){} }
+        } else { try { alert('Rotation lock not supported on this device'); } catch(e){} }
+      } catch (err) { console.warn('thunder: landscape click failed', err); }
+    }
+    btnLandscape && btnLandscape.addEventListener('click', _on_landscape_click);
+
+    // MSE / Prefetch skeleton (unchanged; uses source <source> if present)
+    const STREAM_URL = (function () {
+      const sourceEl = videoEl && videoEl.querySelector ? videoEl.querySelector('source') : null;
+      if (sourceEl && sourceEl.getAttribute('src')) {
+        return sourceEl.getAttribute('src');
+      }
+      return '{{ src }}';
+    })();
+
+    const SUPPORTS_MSE = !!(window.MediaSource && window.MediaSource.isTypeSupported);
+    const FORCE_MSE = false;
+
+    let mediaSource = null;
+    let sourceBuffer = null;
+    let fetching = false;
+    let fetchAbortController = null;
+    let appendedBytes = 0;
+    let pendingAppendQueue = [];
+    let mimeType = (videoEl && videoEl.querySelector('source') || {}).type || 'video/mp4';
+
+    function buildRangeHeader(start, end) { if (typeof end === 'number') return `bytes=${start}-${end}`; return `bytes=${start}-`; }
+
+    async function *fetchRangeGenerator(url, start, end, chunkSize = CHUNK_SIZE, retryAttempts = 2) {
+      let attempts = 0;
+      while (attempts <= retryAttempts) {
+        attempts++;
+        try {
+          const headers = { 'Range': buildRangeHeader(start, end) };
+          fetchAbortController && (fetchAbortController = null);
+          fetchAbortController = new AbortController();
+          const resp = await fetch(url, { headers, signal: fetchAbortController.signal, credentials: 'include' });
+          if (!resp.ok && resp.status !== 206 && resp.status !== 200) {
+            throw new Error(`Unexpected response ${resp.status}`);
+          }
+          if (resp.body && resp.body.getReader) {
+            const reader = resp.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value && value.length) yield value;
+            }
+          } else {
+            const buf = await resp.arrayBuffer();
+            if (buf && buf.byteLength) {
+              let pos = 0;
+              while (pos < buf.byteLength) { const slice = buf.slice(pos, pos + chunkSize); yield new Uint8Array(slice); pos += chunkSize; }
+            }
+          }
+          return;
+        } catch (err) {
+          console.warn('thunder: fetchRange error, attempt', attempts, err);
+          if (attempts > retryAttempts) throw err;
+          await _thunder_sleep(STREAM_RETRY_DELAY_MS * attempts);
+          continue;
+        }
+      }
+    }
+
+    async function appendToSourceBuffer(data) {
+      if (!sourceBuffer) return;
+      return new Promise((resolve, reject) => {
+        try {
+          if (sourceBuffer.updating || pendingAppendQueue.length > 0) {
+            pendingAppendQueue.push({ data, resolve, reject });
+          } else {
+            sourceBuffer.appendBuffer(data);
+            const onUpdate = () => {
+              sourceBuffer.removeEventListener('updateend', onUpdate);
+              resolve();
+              processAppendQueue();
+            };
+            sourceBuffer.addEventListener('updateend', onUpdate);
+          }
+        } catch (e) { reject(e); }
+      });
+    }
+
+    function processAppendQueue() {
+      if (!sourceBuffer || sourceBuffer.updating || pendingAppendQueue.length === 0) return;
+      const item = pendingAppendQueue.shift();
+      try {
+        sourceBuffer.appendBuffer(item.data);
+        const onUpdate = () => {
+          sourceBuffer.removeEventListener('updateend', onUpdate);
+          try { item.resolve(); } catch(e){}
+          processAppendQueue();
+        };
+        sourceBuffer.addEventListener('updateend', onUpdate);
+      } catch (err) { try { item.reject(err); } catch(e){} }
+    }
+
+    async function startMSEStream(url, startOffset = 0, endOffset = null) {
+      if (fetchAbortController) { try { fetchAbortController.abort(); } catch(e){} fetchAbortController = null; }
+      if (!mediaSource || mediaSource.readyState === 'closed') {
+        mediaSource = new MediaSource();
+        try { videoEl.src = URL.createObjectURL(mediaSource); } catch (e) { console.warn('thunder: createObjectURL failed; fallback to native src', e); videoEl.src = url; return; }
+      }
+
+      if (!sourceBuffer) {
+        await new Promise((resolve, reject) => {
+          mediaSource.addEventListener('sourceopen', () => {
+            try {
+              let supportedType = mimeType;
+              if (!MediaSource.isTypeSupported(supportedType)) {
+                if (MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')) {
+                  supportedType = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+                } else { console.warn('thunder: no supported mime for MSE; fallback'); resolve(); return; }
+              }
+              sourceBuffer = mediaSource.addSourceBuffer(supportedType);
+              sourceBuffer.mode = 'segments';
+              sourceBuffer.addEventListener('error', (e)=> console.warn('thunder: sourceBuffer error', e));
+              sourceBuffer.addEventListener('updateend', processAppendQueue);
+              resolve();
+            } catch (e) { console.error('thunder: sourceopen failed', e); resolve(); }
+          }, { once: true });
+        });
+      }
+
+      if (!sourceBuffer) { videoEl.src = url; return; }
+
+      let offset = startOffset;
+      const chunk = CHUNK_SIZE;
+      const maxEnd = (typeof endOffset === 'number') ? endOffset : (offset + (chunk * 1024));
+      let lastActivity = Date.now();
+
+      try {
+        fetching = true;
+        for await (const part of fetchRangeGenerator(url, offset, maxEnd, chunk)) {
+          if (!part || part.length === 0) continue;
+          try { await appendToSourceBuffer(part); appendedBytes += part.length; } catch (appendErr) { console.warn('thunder: append failed', appendErr); await _thunder_sleep(200); continue; }
+          lastActivity = Date.now();
+          if (Math.abs(videoEl.currentTime * 1) > 0 && videoEl.seeking) { break; }
+        }
+      } catch (err) {
+        console.error('thunder: MSE fetch loop error', err);
+        try { fetchAbortController && fetchAbortController.abort(); } catch(e){}
+      } finally { fetching = false; }
+    }
+
+    if (SUPPORTS_MSE && FORCE_MSE) {
+      startMSEStream(STREAM_URL, 0, null).catch((e) => { console.warn('thunder: startMSEStream failed, fallback to native', e); videoEl.src = STREAM_URL; });
+    } else {
+      const srcEl = videoEl.querySelector('source');
+      if (srcEl && srcEl.getAttribute('src')) { try { videoEl.src = srcEl.getAttribute('src'); } catch(e){} }
+    }
+
+    videoEl.addEventListener('seeked', () => _thunder_safe_play(videoEl));
+    videoEl.addEventListener('canplay', () => _thunder_safe_play(videoEl));
+    videoEl.addEventListener('stalled', () => { console.warn('thunder: video stalled, attempting safe play'); _thunder_safe_play(videoEl); });
+
+    let audioCtx = null;
+    try {
+      if (window.AudioContext || window.webkitAudioContext) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        _thunder_delayed_audio_resume(audioCtx, 200);
+      }
+    } catch (e) {}
+
+    window.addEventListener('beforeunload', () => {
+      try {
+        try { _thunder_terminate_seek_worker(); } catch(e){}
+        try { if (fetchAbortController) fetchAbortController.abort(); } catch(e){}
+        try { if (mediaSource && mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch(e){} } } catch (e) {}
+      } catch (e) {}
+    });
+
+    window._thunder_debug_info = {
+      useMSE: SUPPORTS_MSE && FORCE_MSE,
+      mimeType,
+      streamUrl: STREAM_URL,
+      chunkSize: CHUNK_SIZE
+    };
+
+    _tlog('Player initialized', window._thunder_debug_info);
+  })();
+</script>
+
+<!-- Footer -->
+<footer>
+    <p>
+        This website only provides a service to play videos online without downloading. It does not offer storage or dissemination functions. You can report videos that contain copyright issues, explicit content, 18+, violence, etc. 
+        <a href="https://telegram.me/FilmymodOwner_Bot">Report</a>
+    </p>
+    <p><b>&copy; Copyright 2025<br>All Rights Reserved</b></p>
+</footer>
+
+</body>
+</html>
+
+
+
