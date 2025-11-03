@@ -1,73 +1,286 @@
-// Background prefetch loop
-  let backgroundPrefetchInterval = null;
-  function startBackgroundPrefetch() {
-    if (backgroundPrefetchInterval) return;
-    backgroundPrefetchInterval = setInterval(async () => {
-      try {
-        const src = videoEl.currentSrc || videoEl.src;
-        if (!src) return;
-        await net.estimate(src).catch(()=>{});
-        const lookahead = Math.max(10, Math.floor(videoEl.currentTime + 8));
-        const { start, end } = adaptive.getChunk(lookahead, src, false);
-        prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:5000 });
-      } catch(e){}
-    }, 1000);
+<!-- ✅ Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<!-- ✅ HLS & DASH (optional adaptive) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+
+<style>
+  /* user's original small focus tweak */
+  .plyr__control:focus {
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
   }
-  function stopBackgroundPrefetch() {
-    if (backgroundPrefetchInterval) {
-      clearInterval(backgroundPrefetchInterval); backgroundPrefetchInterval = null;
-    }
+
+  /* --- sane stacking for Plyr controls (safe defaults) --- */
+  .plyr__controls {
+    position: relative;
+    z-index: 2 !important;            /* modest z-index so controls don't cover page elements */
+    pointer-events: auto !important;
   }
-  startBackgroundPrefetch();
 
-  // initial adaptive attempt
-  (async function initAdaptive() {
-    try {
-      const src = videoEl.currentSrc || videoEl.src;
-      if (!src) return;
-      await net.estimate(src);
-      const { start, end } = adaptive.getChunk(0, src, false);
-      prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:5000 });
-    } catch(e){}
-  })();
+  /* keep big play overlay visually on top of video but not covering controls */
+  .plyr__play-large {
+    z-index: 4 !important;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: auto !important;
+  }
 
-  // MSE scaffold (best-effort) for MP4
-  let msSupported = !!window.MediaSource;
-  let mseController = { enabled:false, mediaSource:null, sourceBuffer:null, appendQueue:[] };
+  /* slightly reduce overlay on very small screens */
+  @media (max-width: 640px) {
+    .plyr__play-large { transform: translate(-50%, -60%) scale(0.95); }
+  }
 
-  async function tryInitMSE() {
-    try {
-      const src = videoEl.currentSrc || videoEl.src;
-      if (!src || !msSupported) return;
-      if (!src.endsWith('.mp4')) return;
-      const mime = 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"';
-      if (!MediaSource.isTypeSupported(mime)) return;
-      const ms = new MediaSource();
-      mseController.mediaSource = ms;
-      videoEl.src = URL.createObjectURL(ms);
-      ms.addEventListener('sourceopen', async () => {
-        try {
-          const sb = ms.addSourceBuffer(mime);
-          mseController.sourceBuffer = sb; mseController.enabled = true;
-          const res = await smartFetchRange(src, 'bytes=0-1258291', 2, 6000).catch(()=>null);
-          if (!res) return;
-          const ab = await res.arrayBuffer();
-          const appendChunk = () => {
-            if (!mseController.sourceBuffer || mseController.sourceBuffer.updating) { setTimeout(appendChunk, 50); return; }
-            try { mseController.sourceBuffer.appendBuffer(ab); console.log('MSE: appended initial chunk'); } catch(err){ console.log('MSE append error', err); }
-          }; appendChunk();
-        } catch(err){ console.log('MSE open error', err); }
+  /* landscape custom button style (single class) */
+  .landscape-btn {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:2px;
+    padding:5px 8px;
+    border-radius:8px;
+    background: transparent;
+    color: #fff;
+    margin-left:6px;
+    border: none;
+    cursor: pointer;
+  }
+
+  /* page helper classes (won't conflict if your page has its own styles) */
+  .req-player-wrap { width:100%; max-width:980px; }
+  .req-player-video { width:100%; border-radius:10px; display:block; }
+
+  /* optional: make sure custom appended buttons don't inherit undesirable styles */
+  .plyr__controls .landscape-btn { font: inherit; }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  /************************************************************************
+   * Integrated player block
+   * - This block assumes your page already has a <video id="player"> element.
+   * - It preserves the full original advanced logic (prefetch, MSE, sync)
+   *   and inserts defensive fixes:
+   *     • Plyr init guard (prevents duplicate initialization)
+   *     • sane CSS stacking (controls/play-large)
+   *     • idempotent manual play/pause + single landscape append
+   ************************************************************************/
+
+  // 🎬 Grab the video element that you already have on the page
+const videoEl = document.querySelector('#player');
+if (!videoEl) {
+  console.warn('req-player: #player element not found on page — player script aborted.');
+  return;
+}
+
+// ⚙️ Defensive attributes (ensure expected playback behavior)
+try {
+  // preload="auto" ensures browser starts buffering immediately
+  videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
+  videoEl.setAttribute('playsinline', '');
+  videoEl.setAttribute('crossorigin', 'anonymous');
+} catch (e) {
+  console.warn('req-player: failed to apply safe video attributes', e);
+}
+
+// 🎛️ Controls limited as requested (keeps UI minimal)
+const CONTROLS = [
+  'play-large', 'rewind', 'play', 'fast-forward',
+  'progress', 'current-time', 'duration'
+];
+
+/******************************************************
+ * 🧹 Plyr init guard: destroy any previous instance so we
+ * don't end up with duplicated controls or event handlers
+ ******************************************************/
+if (window.__reqPlyrInstance) {
+  try { window.__reqPlyrInstance.destroy(); } catch (e) { /* ignore */ }
+  window.__reqPlyrInstance = null;
+}
+
+// 🚀 Initialize Plyr instance
+window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
+const player = window.__reqPlyrInstance;
+
+// ✅ Force buffering kick-start (fixes 0.0s stuck / no playback issue)
+if (videoEl && videoEl.readyState === 0) {
+  try {
+    videoEl.load();                 // Force reload of metadata + data
+    const playPromise = videoEl.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(() => {
+        console.warn('req-player: autoplay blocked, waiting for user gesture');
       });
-    } catch(e){ console.log('MSE init skipped', e); }
+    }
+  } catch (err) {
+    console.warn('req-player: buffering kick-start failed', err);
   }
-  tryInitMSE();
+}
 
-  // cleanup on unload
-  window.addEventListener('beforeunload', () => {
-    try { prefetchWorker.terminate(); seekWorker.terminate(); } catch(e){}
-    stopBackgroundPrefetch();
-    if (mseController.mediaSource) { try { mseController.mediaSource.endOfStream(); } catch(e){} }
+  /*******************************
+   * ============================
+   * ✅ Manual Play/Pause Button Fix (idempotent)
+   * Inserted into player.on('ready') with landscape append guard
+   * ============================
+   *******************************/
+  player.on('ready', () => {
+    try {
+      const controls = player.elements && player.elements.controls;
+      if (!controls) return;
+
+      // -------------------------
+      // Manual Play/Pause Button Fix (idempotent)
+      // -------------------------
+      const smallPlaySel = '.plyr__control[data-plyr="play"], .plyr__control--play';
+      const smallPlayBtn = controls.querySelector(smallPlaySel);
+      if (smallPlayBtn && !smallPlayBtn._manualPlayBound) {
+        smallPlayBtn._manualPlayBound = true;
+        const handler = async (e) => {
+          try { if (e && e.preventDefault) e.preventDefault(); } catch(_) {}
+          try {
+            // prefer Plyr API: keep internal state correct
+            if (player && typeof player.play === 'function' && typeof player.pause === 'function') {
+              if (player.playing) await player.pause();
+              else await player.play();
+              return;
+            }
+          } catch(err) {
+            console.warn('Plyr API toggle error (fallback to native):', err);
+          }
+          // fallback to native element
+          try {
+            if (videoEl.paused) await videoEl.play();
+            else videoEl.pause();
+          } catch(err) { console.warn('Native play/pause failed:', err); }
+        };
+        smallPlayBtn.addEventListener('click', handler, { passive: false });
+        smallPlayBtn.addEventListener('touchstart', handler, { passive: false });
+      }
+
+      // -------------------------
+      // Append Landscape button only if not already appended
+      // -------------------------
+      if (typeof createLandscapeButton === 'function') {
+        if (!controls.querySelector('.landscape-btn')) {
+          const landscapeBtn = createLandscapeButton();
+          landscapeBtn.classList.add('landscape-btn');
+          controls.appendChild(landscapeBtn);
+        }
+      }
+
+      // Defensive: ensure controls container styling does not break layout
+      try {
+        controls.style.pointerEvents = 'auto';
+        if (!controls.style.zIndex) controls.style.zIndex = '2';
+      } catch(e){}
+    } catch (e) {
+      console.warn('Play button patch failed', e);
+    }
   });
+
+  /*******************************
+   * AudioContext + basic pipeline
+   *******************************/
+  let audioContext = null;
+  let gainNode = null;
+  function setupAudioContext() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      try {
+        const source = audioContext.createMediaElementSource(videoEl);
+        gainNode = audioContext.createGain();
+        gainNode.gain.value = 1.0; // normal by default
+        source.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+      } catch (e) {
+        console.warn('AudioContext createMediaElementSource failed', e);
+      }
+    }
+    audioContext && audioContext.resume().catch(()=>{});
+  }
+
+  // Ensure audio resume on user gesture
+  function ensureAudioPlayback() {
+    try {
+      if (!audioContext) setupAudioContext();
+      if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(()=>{});
+      if (videoEl.paused) videoEl.play().catch(()=>{});
+    } catch(e){}
+  }
+  document.addEventListener('click', ensureAudioPlayback, { passive: true });
+  document.addEventListener('touchstart', ensureAudioPlayback, { passive: true, once: true });
+  videoEl.addEventListener('play', ensureAudioPlayback);
+  videoEl.addEventListener('playing', ensureAudioPlayback);
+
+  /********************************************************
+   * Intelligent resume & buffer stabilization (original)
+   ********************************************************/
+  let seekTimeout;
+  videoEl.addEventListener('seeking', () => {
+    clearTimeout(seekTimeout);
+    try { videoEl.pause(); } catch(e){}
+    seekTimeout = setTimeout(() => {
+      if (videoEl.readyState >= 3) {
+        videoEl.play().catch(()=>{});
+      } else {
+        const resumeCheck = setInterval(() => {
+          if (videoEl.readyState >= 3) {
+            clearInterval(resumeCheck);
+            videoEl.play().catch(()=>{});
+          }
+        }, 150);
+        setTimeout(() => clearInterval(resumeCheck), 4000);
+      }
+    }, 120);
+  });
+
+  /********************************************************
+   * Landscape (custom) button only — function; appended in ready()
+   ********************************************************/
+  function createLandscapeButton() {
+    const btn = document.createElement('button');
+    btn.className = 'plyr__control landscape-btn';
+    btn.type = 'button';
+    Object.assign(btn.style, {
+      display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+      fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'6px',
+      WebkitTapHighlightColor:'transparent', background:'transparent', border:'none'
+    });
+    btn.innerHTML = `
+      <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
+      <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
+    `;
+    let isLandscape = false;
+    btn.addEventListener('click', async () => {
+      ensureAudioPlayback();
+      const label = btn.querySelector('span');
+      try {
+        if (!isLandscape) {
+          if (player && player.fullscreen) await player.fullscreen.enter();
+          if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+          label.innerText = 'Portrait';
+          label.style.color = '#ff9933';
+          isLandscape = true;
+        } else {
+          if (player && player.fullscreen) await player.fullscreen.exit();
+          if (screen.orientation?.unlock) screen.orientation.unlock();
+          label.innerText = 'Landscape';
+          label.style.color = '#00ffcc';
+          isLandscape = false;
+        }
+      } catch (e) { console.log(e); }
+    });
+    // ensure first click unlocks audio
+    btn.addEventListener('click', ensureAudioPlayback);
+    return btn;
+  } 
 
   /************************************************************************
    * AUDIO + VIDEO SYNC: robust synchronizer (keeps audio/video in sync)
@@ -138,3 +351,161 @@
       setTimeout(() => { if (!settled) { settled = true; clearInterval(poll); resolve(false); } }, timeoutMs + 120);
     });
   }
+
+  function syncTick() {
+    if (!audioContext || videoEl.paused || videoEl.readyState < 2) {
+      emaRate = 1.0;
+      try { if (videoEl.playbackRate !== 1.0) videoEl.playbackRate = 1.0; } catch(e){}
+      return;
+    }
+    let expectedAudioTime = audioContext.currentTime - audioOffset;
+    if (typeof audioContext.outputLatency === 'number') expectedAudioTime -= audioContext.outputLatency;
+    else if (typeof audioContext.baseLatency === 'number') expectedAudioTime -= audioContext.baseLatency;
+
+    const vtime = videoEl.currentTime;
+    let drift = expectedAudioTime - vtime;
+    if (!isFinite(drift) || Math.abs(drift) > 300) { refreshAudioOffset(); return; }
+
+    // big drift => attempt safe seek to buffered region
+    if (Math.abs(drift) > 0.45) {
+      const targetTime = vtime + drift;
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (src) {
+          const bitrate = 1.2 * 1024 * 1024;
+          const startByte = Math.max(0, Math.floor(targetTime * bitrate) - (4 * 1024 * 1024));
+          const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+        }
+      } catch(e){}
+      const buf = isTimeBuffered(targetTime);
+      if (buf) {
+        const safeTarget = clamp(targetTime, buf.start + 0.02, buf.end - 0.02);
+        try {
+          videoEl.pause();
+          videoEl.currentTime = safeTarget;
+          attemptBufferedRender(safeTarget, 4200).then((ok) => {
+            ensureAudioReady();
+            setTimeout(()=> { videoEl.play().catch(()=>{}); refreshAudioOffset(); }, 120);
+          });
+        } catch (e){}
+        return;
+      }
+    }
+// small drift -> gentle playbackRate correction (exponential smoothing)
+    const gain = 0.12;
+    let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
+    if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
+    emaRate = emaRate + (rawTargetRate - emaRate) * EMA_ALPHA;
+    const finalRate = clamp(emaRate, 0.94, 1.06);
+    if (Math.abs(videoEl.playbackRate - finalRate) > 0.0009) {
+      try { videoEl.playbackRate = finalRate; } catch(e){}
+    }
+    if (Math.abs(drift) > 0.8) refreshAudioOffset();
+  }
+
+  function startSyncLoop() {
+    if (syncInterval) return;
+    refreshAudioOffset();
+    syncInterval = setInterval(syncTick, POLL_MS);
+    setTimeout(syncTick, 40);
+  }
+  function stopSyncLoop() {
+    if (!syncInterval) return;
+    clearInterval(syncInterval);
+    syncInterval = null;
+    try { videoEl.playbackRate = 1.0; } catch(e){}
+    emaRate = 1.0;
+  }
+
+  // seeking handlers: pause sync and suspend audio pipeline temporarily
+  let savedGainValue = 1.0;
+  videoEl.addEventListener('seeking', () => {
+    stopSyncLoop();
+    if (audioContext && audioContext.state === 'running') audioContext.suspend().catch(()=>{});
+    try { videoEl.pause(); } catch(e){}
+  });
+
+  videoEl.addEventListener('seeked', async () => {
+    try {
+      if (gainNode && audioContext) {
+        savedGainValue = gainNode.gain.value || 1.0;
+        gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+        gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      }
+    } catch(e){}
+
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (src) {
+        const bitrate = 1.2 * 1024 * 1024;
+        const startByte = Math.max(0, Math.floor(videoEl.currentTime * bitrate) - (2 * 1024 * 1024));
+        const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+        seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+      }
+    } catch(e){}
+
+    const target = videoEl.currentTime;
+    const ok = await attemptBufferedRender(target, 5200);
+
+    ensureAudioReady();
+    refreshAudioOffset();
+
+    setTimeout(() => {
+      try {
+        if (gainNode && audioContext) {
+          gainNode.gain.setValueAtTime(savedGainValue || 1.0, audioContext.currentTime);
+        }
+      } catch(e){}
+      startSyncLoop();
+      syncTick();
+    }, 140);
+  });
+
+  // play / playing listeners to (re)start sync loop
+  videoEl.addEventListener('play', () => {
+    ensureAudioReady();
+    refreshAudioOffset();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('playing', () => {
+    refreshAudioOffset();
+    syncTick();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('ratechange', () => { emaRate = clamp(videoEl.playbackRate, 0.5, 2.0); });
+
+  // wrap setupAudioContext to start sync after audio created
+  const _origSetup = setupAudioContext;
+  setupAudioContext = function() {
+    _origSetup();
+    setTimeout(() => { try { refreshAudioOffset(); startSyncLoop(); } catch(e){} }, 80);
+  };
+
+  // optional helper: attachSource (HLS/DASH/fallback)
+  async function attachSource(src) {
+    if (!src) return;
+    if (src.endsWith('.m3u8') && window.Hls && Hls.isSupported()) {
+      try {
+        const hls = new Hls({ lowLatencyMode: true, maxBufferLength: 30 });
+        hls.loadSource(src);
+        hls.attachMedia(videoEl);
+        console.log('HLS attached');
+        return;
+      } catch (e) { console.warn('HLS attach failed', e); }
+    }
+    if (src.endsWith('.mpd') && window.dashjs) {
+      try {
+        const playerDash = dashjs.MediaPlayer().create();
+        playerDash.initialize(videoEl, src, false);
+        console.log('DASH attached');
+        return;
+      } catch (e) { console.warn('DASH attach failed', e); }
+    }
+    videoEl.src = src;
+  }
+  window.playerAttach = attachSource;
+
+  console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
+});
+</script>
