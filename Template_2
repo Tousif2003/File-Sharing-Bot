@@ -127,7 +127,7 @@
     id="player"
     playsinline
     controls
-    preload="auto"
+    preload="metadata"
     crossorigin="anonymous"
     controlsList="nodownload"
     aria-label="Video player"
@@ -226,19 +226,19 @@
   animation-fill-mode: forwards;
 }
 
-/* Sequential animation: initial wait 1s, then each button 0.5s after previous */
+/* Sequential animation: initial wait 1.5s, then each button 0.5s after previous */
 .stream-options a:nth-child(1),
-.card.card-body:nth-child(1) { animation-delay: 1s; }
+.card.card-body:nth-child(1) { animation-delay: 1.5s; }
 .stream-options a:nth-child(2),
-.card.card-body:nth-child(2) { animation-delay: 1.5s; }
+.card.card-body:nth-child(2) { animation-delay: 2s; }
 .stream-options a:nth-child(3),
-.card.card-body:nth-child(3) { animation-delay: 2s; }
+.card.card-body:nth-child(3) { animation-delay: 2.5s; }
 .stream-options a:nth-child(4),
-.card.card-body:nth-child(4) { animation-delay: 2.5s; }
+.card.card-body:nth-child(4) { animation-delay: 3s; }
 .stream-options a:nth-child(5),
-.card.card-body:nth-child(5) { animation-delay: 3s; }
+.card.card-body:nth-child(5) { animation-delay: 3.5s; }
 .stream-options a:nth-child(6),
-.card.card-body:nth-child(6) { animation-delay: 3.5s; }
+.card.card-body:nth-child(6) { animation-delay: 4s; }
 
 /* Remove old fade/slide effects */
 .fadeInLeft, .fadeInRight, .shakeX {
@@ -325,6 +325,89 @@
 
   /* optional: make sure custom appended buttons don't inherit undesirable styles */
   .plyr__controls .landscape-btn { font: inherit; }
+  
+/* === Mobile Responsive Controls (portrait only, default size + better tap space) === */
+
+/* ✅ Normal mode (portrait) spacing — comfortable tap zones */
+.plyr__control[data-plyr="rewind"],
+.plyr__control[data-plyr="play"]:not(.plyr__play-large),
+.plyr__control[data-plyr="pause"]:not(.plyr__play-large),
+.plyr__control[data-plyr="fast-forward"] {
+  padding: 10px 12px !important;
+  margin: 0 0px !important;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+/* ✅ Remove default Plyr flex gap between buttons */
+.plyr__controls {
+  gap: 0px !important; /* <<-- Ye line space remove karegi */
+}
+
+/* ✅ Keep icon sizes default */
+.plyr__control[data-plyr="rewind"] svg,
+.plyr__control[data-plyr="play"]:not(.plyr__play-large) svg,
+.plyr__control[data-plyr="pause"]:not(.plyr__play-large) svg,
+.plyr__control[data-plyr="fast-forward"] svg {
+  width: 20px !important;
+  height: 20px !important;
+}
+
+/* ✅ Hover feedback */
+.plyr__control[data-plyr="rewind"]:hover,
+.plyr__control[data-plyr="pause"]:not(.plyr__play-large):hover,
+.plyr__control[data-plyr="fast-forward"]:hover {
+  transform: scale(1.05);
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ✅ Landscape mode — Compact bigger controls (keep same) */
+@media (orientation: landscape) {
+
+  /* 🎯 Apply only to small control buttons (not the big play overlay) */
+  .plyr__control[data-plyr="rewind"],
+  .plyr__control[data-plyr="play"]:not(.plyr__play-large),
+  .plyr__control[data-plyr="pause"],
+  .plyr__control[data-plyr="fast-forward"] {
+    width: 50px !important;
+    height: 50px !important;
+    font-size: 20px !important;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.25s ease-in-out;
+  }
+
+  /* 🎨 SVG icon size */
+  .plyr__control[data-plyr="rewind"] svg,
+  .plyr__control[data-plyr="play"]:not(.plyr__play-large) svg,
+  .plyr__control[data-plyr="pause"] svg,
+  .plyr__control[data-plyr="fast-forward"] svg {
+    width: 30px !important;
+    height: 30px !important;
+  }
+
+  /* 🧩 Spacing between buttons */
+  .plyr__control[data-plyr="rewind"] {
+    margin-right: 9px !important;
+  }
+  .plyr__control[data-plyr="fast-forward"] {
+    margin-left: 9px !important;
+  }
+
+  /* ✨ Hover animation */
+  .plyr__control[data-plyr="rewind"]:hover,
+  .plyr__control[data-plyr="pause"]:hover,
+  .plyr__control[data-plyr="fast-forward"]:hover {
+    transform: scale(1.06);
+    background-color: rgba(255, 255, 255, 0.12);
+  }
+
+}
 </style>
 
 <script>
@@ -486,125 +569,6 @@ if (videoEl && videoEl.readyState === 0) {
   videoEl.addEventListener('playing', ensureAudioPlayback);
 
   /********************************************************
-   * Smart MKV prefetch (keeps your original behavior)
-   * -> REPLACED/ENHANCED: MKV Low-Buffering System (Heroku-friendly)
-   ********************************************************/
-
-  // mkvPrefetchConfig: conservative defaults tuned for low-bandwidth hosts (Heroku/free)
-  const mkvPrefetchConfig = {
-    initialMB: 2,        // initial prefetch on load (2 MB)
-    seekMB: 4,           // chunk to prefetch on long seeks (~4 MB)
-    maxMB: 6,            // maximum allowed in adaptive increase (~6 MB)
-    hintKB: 128,         // background hint size (in KB)
-    seekThresholdSec: 8, // consider long seek if > 8s
-    controllerTimeout: 6000
-  };
-
-  // helper: convert MB to bytes
-  function MB(n){ return Math.floor(n * 1024 * 1024); }
-  function KB(n){ return Math.floor(n * 1024); }
-
-  // lightweight MKV prefetch using worker (so it doesn't block main-thread heavy fetch)
-  async function smartMKVPrefetch() {
-    try {
-      const src = videoEl.currentSrc || videoEl.src;
-      if (!src || !src.endsWith('.mkv')) return;
-
-      // use worker to prefetch initial small chunk
-      try {
-        const start = 0;
-        const end = MB(mkvPrefetchConfig.initialMB) - 1;
-        prefetchWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${start}-${end}`, timeout: mkvPrefetchConfig.controllerTimeout });
-        console.log(`✅ MKV lightweight initial prefetch requested (${mkvPrefetchConfig.initialMB}MB)`);
-      } catch(e){ console.warn('MKV prefetch worker error', e); }
-    } catch (e) {
-      console.log('ℹ️ MKV Prefetch skipped:', e && e.message);
-    }
-  }
-  // call immediately (non-blocking)
-  smartMKVPrefetch();
-
-  /********************************************************
-   * MKV long-seek optimizer (VLC-like logic) — enhanced
-   * - Uses workers to prefetch around seek targets
-   * - Conservative sizes (4MB) to suit Heroku/free-tier
-   ********************************************************/
-  let lastSeek = 0;
-  let isPrefetching = false;
-  videoEl.addEventListener('seeking', async () => {
-    ensureAudioPlayback();
-    const currentTime = videoEl.currentTime;
-    const jumpDiff = Math.abs(currentTime - lastSeek);
-    lastSeek = currentTime;
-
-    // Only run MKV long-seek optimization on MKV sources
-    if (!(videoEl.currentSrc && videoEl.currentSrc.endsWith('.mkv'))) return;
-    if (isPrefetching) return;
-
-    // Only act on significant jumps
-    if (jumpDiff < mkvPrefetchConfig.seekThresholdSec) return;
-
-    isPrefetching = true;
-    try {
-      const src = videoEl.currentSrc;
-      // conservative bitrate estimate
-      const bitrateEstimate = 1.0 * 1024 * 1024; // 1 MB/s estimate
-      const targetStart = Math.max(0, Math.floor(currentTime * bitrateEstimate) - MB(Math.floor(mkvPrefetchConfig.seekMB/2)));
-      const prefetchSize = MB(mkvPrefetchConfig.seekMB);
-      const startByte = Math.max(0, targetStart);
-      const endByte = startByte + prefetchSize - 1;
-
-      // Use worker to prefetch (non-blocking)
-      seekWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${startByte}-${endByte}`, timeout: mkvPrefetchConfig.controllerTimeout });
-      console.log(`🎯 MKV seek prefetch (worker) requested: ${Math.round(prefetchSize/1048576)}MB @ ${Math.round(startByte/1048576)}MB`);
-    } catch (e) {
-      console.log('⚠️ MKV seek prefetch failed:', e && e.message);
-    } finally {
-      setTimeout(() => (isPrefetching = false), 900); // small cool-down
-    }
-  });
-
-  /********************************************************
-   * Background MKV hinting (very small, Heroku-friendly)
-   * - Sends tiny range hints periodically (~128 KB) to keep TCP/TLS
-   *   connection warm and reduce latency on subsequent requests
-   ********************************************************/
-  let mkvHintInterval = null;
-  function startMKVHints() {
-    if (mkvHintInterval) return;
-    mkvHintInterval = setInterval(async () => {
-      try {
-        const src = videoEl.currentSrc || videoEl.src;
-        if (!src || !src.endsWith('.mkv')) return;
-        // pick a small range near currentTime + lookahead (so it warms nearby bytes)
-        const lookaheadSec = Math.max(8, Math.floor(videoEl.currentTime + 8));
-        const bitrate = 1.0 * 1024 * 1024; // same conservative estimate
-        const bytePos = Math.max(0, Math.floor(lookaheadSec * bitrate));
-        const hintSize = KB(mkvPrefetchConfig.hintKB);
-        const start = Math.max(0, bytePos);
-        const end = start + hintSize - 1;
-        prefetchWorker.postMessage({ id: Date.now(), task: 'prefetch', src, range: `bytes=${start}-${end}`, timeout: 3000 });
-        // silent, no heavy logs to not flood console
-      } catch (e) { /* ignore */ }
-    }, 3500); // every ~3.5s (small but regular)
-  }
-  function stopMKVHints() {
-    if (mkvHintInterval) {
-      clearInterval(mkvHintInterval);
-      mkvHintInterval = null;
-    }
-  }
-  // Start MKV hints when video loaded & source is MKV
-  videoEl.addEventListener('loadedmetadata', () => {
-    try {
-      const src = videoEl.currentSrc || videoEl.src;
-      if (src && src.endsWith('.mkv')) startMKVHints();
-    } catch(e){}
-  });
-  // Stop hints on unload
-  window.addEventListener('beforeunload', () => stopMKVHints());
-
-  /********************************************************
    * Intelligent resume & buffer stabilization (original)
    ********************************************************/
   let seekTimeout;
@@ -665,179 +629,7 @@ if (videoEl && videoEl.readyState === 0) {
     // ensure first click unlocks audio
     btn.addEventListener('click', ensureAudioPlayback);
     return btn;
-  }
-
-  /************************************************************************
-   * ADVANCED OPTIMIZATIONS (kept intact)
-   * - workers (prefetch + seek)
-   * - adaptive prefetch controller
-   * - smart retries
-   * - 100ms seek stabilizer
-   * - network estimator + background prefetch
-   * - MSE scaffold for MP4
-   ************************************************************************/
-
-  function bytesToMB(n){ return (n/1048576).toFixed(2); }
-
-  const net = {
-    lastRTT: 0, kbpsEstimate: null,
-    async estimate(src) {
-      try {
-        const t0 = performance.now();
-        const controller = new AbortController();
-        setTimeout(()=>controller.abort(), 4000);
-        const res = await fetch(src, { headers: { Range: 'bytes=0-65535' }, signal: controller.signal });
-        const t1 = performance.now();
-        if (!res.ok) return null;
-        const len = +(res.headers.get('Content-Length') || 65536);
-        const ms = Math.max(1, t1 - t0);
-        this.kbpsEstimate = (len * 8) / ms;
-        this.lastRTT = ms;
-        console.log(`🌐 Speed estimate: ${bytesToMB(len)} MB chunk in ${Math.round(ms)} ms`);
-        return this.kbpsEstimate;
-      } catch (e) { return null; }
-    }
-  };
-
-  const workerCode = `
-    self.onmessage = async (e) => {
-      const { id, task, src, range, timeout } = e.data;
-      if (!src || !range) { self.postMessage({ id, ok:false, task, error:'no-src-or-range' }); return; }
-      try {
-        const controller = new AbortController();
-        const to = setTimeout(()=>controller.abort(), timeout || 8000);
-        const r = await fetch(src, { headers: { Range: range }, signal: controller.signal, cache:'no-store' });
-        clearTimeout(to);
-        if (!r.ok) { self.postMessage({ id, ok:false, task, status:r.status }); return; }
-        const blob = await r.blob();
-        self.postMessage({ id, ok:true, task, range, size: blob.size });
-      } catch (err) {
-        self.postMessage({ id, ok:false, task, error: String(err) });
-      }
-    };
-  `;
-  const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
-  const workerURL = URL.createObjectURL(workerBlob);
-  const prefetchWorker = new Worker(workerURL);
-  const seekWorker = new Worker(workerURL);
-
-  prefetchWorker.onmessage = (e) => { /* optional logging */ };
-  seekWorker.onmessage = (e) => { /* optional logging */ };
-
-  const adaptive = {
-    minMB: 8, maxMB: 12,
-    getChunk(currentTime, src, preferLarger=false){
-      const est = net.kbpsEstimate;
-      const sizeMB = preferLarger ? this.maxMB : this.minMB;
-      const chosenMB = (est && est > 0.03) ? this.maxMB : sizeMB;
-      const bitrate = 1.2 * 1024 * 1024;
-      const start = Math.max(0, Math.floor(currentTime * bitrate));
-      const chunk = Math.floor(chosenMB * 1024 * 1024);
-      return { start, end: start + chunk - 1, chunkBytes: chunk };
-    }
-  };
-
-  async function smartFetchRange(src, range, attempts = 2, timeout = 6000) {
-    for (let i=0;i<attempts;i++){
-      try {
-        const controller = new AbortController();
-        setTimeout(()=>controller.abort(), timeout);
-        const res = await fetch(src, { headers: { Range: range }, signal: controller.signal, cache:'no-store' });
-        if (res && res.ok) return res;
-      } catch (e) { /* retry */ }
-      await new Promise(r=>setTimeout(r, 200 + i*100));
-    }
-    throw new Error('range-fetch-failed');
-  }
-
-  // 100ms micro-stabilizer for seeking (keeps original idea)
-  let advSeekTimer;
-  videoEl.addEventListener('seeking', () => {
-    clearTimeout(advSeekTimer);
-    advSeekTimer = setTimeout(() => {
-      if (videoEl.readyState < 3) {
-        try {
-          const src = videoEl.currentSrc || videoEl.src;
-          if (!src) return;
-          const bitrate = 1.2 * 1024 * 1024;
-          const start = Math.max(0, Math.floor(videoEl.currentTime * bitrate));
-          const end = start + (4 * 1024 * 1024) - 1;
-          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:4000 });
-        } catch(e){}
-      }
-    }, 100);
-  });
-
-  // Background prefetch loop
-  let backgroundPrefetchInterval = null;
-  function startBackgroundPrefetch() {
-    if (backgroundPrefetchInterval) return;
-    backgroundPrefetchInterval = setInterval(async () => {
-      try {
-        const src = videoEl.currentSrc || videoEl.src;
-        if (!src) return;
-        await net.estimate(src).catch(()=>{});
-        const lookahead = Math.max(10, Math.floor(videoEl.currentTime + 8));
-        const { start, end } = adaptive.getChunk(lookahead, src, false);
-        prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:5000 });
-      } catch(e){}
-    }, 1000);
-  }
-  function stopBackgroundPrefetch() {
-    if (backgroundPrefetchInterval) {
-      clearInterval(backgroundPrefetchInterval); backgroundPrefetchInterval = null;
-    }
-  }
-  startBackgroundPrefetch();
-
-  // initial adaptive attempt
-  (async function initAdaptive() {
-    try {
-      const src = videoEl.currentSrc || videoEl.src;
-      if (!src) return;
-      await net.estimate(src);
-      const { start, end } = adaptive.getChunk(0, src, false);
-      prefetchWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${start}-${end}`, timeout:5000 });
-    } catch(e){}
-  })();
-
-  // MSE scaffold (best-effort) for MP4
-  let msSupported = !!window.MediaSource;
-  let mseController = { enabled:false, mediaSource:null, sourceBuffer:null, appendQueue:[] };
-
-  async function tryInitMSE() {
-    try {
-      const src = videoEl.currentSrc || videoEl.src;
-      if (!src || !msSupported) return;
-      if (!src.endsWith('.mp4')) return;
-      const mime = 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"';
-      if (!MediaSource.isTypeSupported(mime)) return;
-      const ms = new MediaSource();
-      mseController.mediaSource = ms;
-      videoEl.src = URL.createObjectURL(ms);
-      ms.addEventListener('sourceopen', async () => {
-        try {
-          const sb = ms.addSourceBuffer(mime);
-          mseController.sourceBuffer = sb; mseController.enabled = true;
-          const res = await smartFetchRange(src, 'bytes=0-1258291', 2, 6000).catch(()=>null);
-          if (!res) return;
-          const ab = await res.arrayBuffer();
-          const appendChunk = () => {
-            if (!mseController.sourceBuffer || mseController.sourceBuffer.updating) { setTimeout(appendChunk, 50); return; }
-            try { mseController.sourceBuffer.appendBuffer(ab); console.log('MSE: appended initial chunk'); } catch(err){ console.log('MSE append error', err); }
-          }; appendChunk();
-        } catch(err){ console.log('MSE open error', err); }
-      });
-    } catch(e){ console.log('MSE init skipped', e); }
-  }
-  tryInitMSE();
-
-  // cleanup on unload
-  window.addEventListener('beforeunload', () => {
-    try { prefetchWorker.terminate(); seekWorker.terminate(); } catch(e){}
-    stopBackgroundPrefetch();
-    if (mseController.mediaSource) { try { mseController.mediaSource.endOfStream(); } catch(e){} }
-  });
+  } 
 
   /************************************************************************
    * AUDIO + VIDEO SYNC: robust synchronizer (keeps audio/video in sync)
@@ -1077,3 +869,31 @@ if (videoEl && videoEl.readyState === 0) {
 
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
