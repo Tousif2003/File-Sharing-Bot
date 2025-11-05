@@ -5,7 +5,9 @@ import secrets
 import time
 from urllib.parse import quote, unquote
 import json
-from aiohttp import web
+import asyncio
+from aiohttp import web, ClientConnectionResetError 
+from aiohttp.web_exceptions import HTTPInternalServerError, HTTPNotFound
 
 from Thunder import __version__, StartTime
 from Thunder.bot import StreamBot, multi_clients, work_loads
@@ -174,16 +176,21 @@ async def media_delivery(request: web.Request):
         path = request.match_info["path"]
         message_id, secure_hash = parse_media_request(path, request.query)
 
-        # ✅ Select optimal Telegram client
+        # ✅ Choose best Telegram client dynamically
         client_id, streamer = select_optimal_client()
         work_loads[client_id] += 1
 
         try:
-            # ✅ Fetch file info
+            # 🔥 Warm Telegram connection (avoid cold-start lag)
+            try:
+                await streamer.get_me()
+            except Exception:
+                pass
+
+            # 🎯 Fetch file info
             file_info = await streamer.get_file_info(message_id)
             if not file_info.get("unique_id"):
                 raise FileNotFound("File unique ID not found.")
-
             if file_info["unique_id"][:SECURE_HASH_LENGTH] != secure_hash:
                 raise InvalidHash("Hash mismatch with file unique ID.")
 
@@ -191,7 +198,7 @@ async def media_delivery(request: web.Request):
             if not file_size:
                 raise FileNotFound("File size unavailable or zero.")
 
-            # ✅ Handle Range header (for resume support)
+            # 🎯 Handle Range header
             range_header = request.headers.get("Range", "")
             start, end = parse_range_header(range_header, file_size)
             content_length = end - start + 1
@@ -200,42 +207,40 @@ async def media_delivery(request: web.Request):
             filename = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
             encoded_filename = quote(filename)
 
-            # ✅ Force download headers
+            # ✅ Streaming headers (force download)
             headers = {
-                "Content-Type": "application/octet-stream",
-                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+                "Content-Type": "application/octet-stream",  # always binary
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Accept-Ranges": "bytes",
-                "Cache-Control": "no-transform, public, max-age=31536000, immutable",
-                "Pragma": "public",
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Cache-Control": "public, max-age=31536000",
                 "Connection": "keep-alive",
                 "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "strict-origin-when-cross-origin",
+                "X-Accel-Buffering": "no",
                 "Content-Length": str(content_length),
             }
-
             if not full_range:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-            # ✅ For HEAD requests (metadata only)
+            # ✅ For HEAD request (metadata only)
             if request.method == "HEAD":
                 work_loads[client_id] -= 1
-                return web.Response(
-                    status=206 if not full_range else 200,
-                    headers=headers
-                )
+                return web.Response(status=206 if not full_range else 200, headers=headers)
 
-            # ✅ StreamResponse = faster + stable
-            response = web.StreamResponse(
-                status=206 if not full_range else 200,
-                headers=headers
-            )
+            # ✅ Prepare streaming response
+            response = web.StreamResponse(status=206 if not full_range else 200, headers=headers)
             await response.prepare(request)
 
-            CHUNK_SIZE = 1024 * 1024  # 1MB per chunk (tuned for best speed)
+            # ⚙️ Chunk + buffering setup
+            CLIENT_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB chunks for stability
+            write_buffer = bytearray()
             bytes_sent = 0
-            bytes_to_skip = start % CHUNK_SIZE
+            bytes_to_skip = start % CLIENT_CHUNK_SIZE
 
+            # 🚀 Stream from Telegram
             async for chunk in streamer.stream_file(message_id, offset=start, limit=content_length):
-                if bytes_to_skip > 0:
+                if bytes_to_skip:
                     if len(chunk) <= bytes_to_skip:
                         bytes_to_skip -= len(chunk)
                         continue
@@ -246,12 +251,34 @@ async def media_delivery(request: web.Request):
                 if len(chunk) > remaining:
                     chunk = chunk[:remaining]
 
-                if chunk:
-                    await response.write(chunk)
-                    bytes_sent += len(chunk)
+                # ✅ Buffered writing
+                write_buffer.extend(chunk)
+                if len(write_buffer) >= CLIENT_CHUNK_SIZE:
+                    try:
+                        await response.write(write_buffer)
+                        await response.drain()
+                        write_buffer = bytearray()
+                        # Slight yield every ~3MB to keep async smooth
+                        if bytes_sent % (3 * CLIENT_CHUNK_SIZE) == 0:
+                            await asyncio.sleep(0)
+                    except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                        logger.warning("⚠️ Client disconnected mid-stream.")
+                        break
+                    except BufferError:
+                        logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
+                        write_buffer = bytearray()
 
+                bytes_sent += len(chunk)
                 if bytes_sent >= content_length:
                     break
+
+            # ✅ Final flush
+            if write_buffer:
+                try:
+                    await response.write(write_buffer)
+                    await response.drain()
+                except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                    logger.warning("⚠️ Client disconnected during final flush.")
 
             await response.write_eof()
 
@@ -268,19 +295,13 @@ async def media_delivery(request: web.Request):
 
         return response
 
-    except (InvalidHash, FileNotFound) as e:
-        logger.debug(f"Client error: {e}")
-        raise web.HTTPNotFound(text="Resource not found") from e
+    except (InvalidHash, FileNotFound):
+        raise web.HTTPNotFound(text="Resource not found")
 
     except Exception as e:
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
-        raise web.HTTPInternalServerError(
-            text=f"Unexpected server error: {error_id}"
-        ) from e
-
-
-
+        raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
 
 
 
