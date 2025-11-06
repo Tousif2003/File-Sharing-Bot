@@ -8,6 +8,7 @@ import json
 import asyncio
 from aiohttp import web, ClientConnectionResetError 
 from aiohttp.web_exceptions import HTTPInternalServerError, HTTPNotFound
+import os
 
 from Thunder import __version__, StartTime
 from Thunder.bot import StreamBot, multi_clients, work_loads
@@ -16,6 +17,9 @@ from Thunder.utils.custom_dl import ByteStreamer
 from Thunder.utils.logger import logger
 from Thunder.utils.render_template import render_page
 from Thunder.utils.time_format import get_readable_time
+
+# safe download ke functions 
+from Thunder.utils.safe_download import stream_and_save, get_state_snapshot
 
 routes = web.RouteTableDef()
 
@@ -30,6 +34,21 @@ VALID_HASH_REGEX = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 streamers = {}
 
+@routes.get("/progress", allow_head=True)
+async def progress_handler(request):
+    chat_id = request.query.get("chat_id")
+    msg_id  = request.query.get("msg_id")
+
+    if not chat_id or not msg_id:
+        return web.json_response({"error": "chat_id and msg_id required"}, status=400)
+
+    key = f"{chat_id}:{msg_id}"
+    state = get_state_snapshot(key)
+
+    if not state:
+        return web.json_response({"status": "not_found", "message": "No active or finished download found"})
+
+    return web.json_response(state)
 
 def get_streamer(client_id: int) -> ByteStreamer:
     if client_id not in streamers:
@@ -198,7 +217,39 @@ async def media_delivery(request: web.Request):
             if not file_size:
                 raise FileNotFound("File size unavailable or zero.")
 
-            # 🎯 Handle Range header
+            # ✅ SAFE HANDOFF: use safe_download ONLY for GET & when NO Range (resume/HEAD => legacy)
+            if request.method == "GET" and not request.headers.get("Range"):
+                try:
+                    # ✅ Strong chat_id resolver: StreamBot → ?chat_id → BIN_CHANNEL (env)
+                    chat_id = (
+                        getattr(StreamBot, "chat_id", None) or
+                        request.query.get("chat_id") or
+                        os.getenv("BIN_CHANNEL")
+                    )
+                    if not chat_id:
+                        raise FileNotFound("Chat ID not available for fetching message.")
+                    # ✅ sanitize and cast to int
+                    chat_id = int(str(chat_id).replace("@", "").strip())
+
+                    # ensure client is started before get_messages
+                    cli = multi_clients[client_id]
+                    try:
+                        if not getattr(cli, "_is_connected", False):
+                            await cli.start()
+                    except Exception:
+                        pass
+
+                    # 📥 fetch original message and handoff to safe downloader
+                    msg = await cli.get_messages(chat_id, int(message_id))
+                    # 🔥 DC-aware, governor, retries, batched writes
+                    return await stream_and_save(msg, request)
+
+                except Exception as _e:
+                    logger.warning(
+                        f"⚠️ safe_download handoff failed, using legacy streamer. Error: {_e}"
+                    )
+
+            # 🎯 Handle Range header (legacy resume/parallel path)
             range_header = request.headers.get("Range", "")
             start, end = parse_range_header(range_header, file_size)
             content_length = end - start + 1
@@ -207,27 +258,29 @@ async def media_delivery(request: web.Request):
             filename = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
             encoded_filename = quote(filename)
 
-            # ✅ Streaming headers (force download)
+            # ✅ RFC-correct headers
             headers = {
-                "Content-Type": "application/octet-stream",  # always binary
+                "Content-Type": "application/octet-stream",
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Accept-Ranges": "bytes",
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Cache-Control": "public, max-age=31536000",
                 "Connection": "keep-alive",
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "strict-origin-when-cross-origin",
+                "X-Accel-Buffering": "no",
                 "Content-Length": str(content_length),
             }
             if not full_range:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-            # ✅ For HEAD request (metadata only)
+            # 🔎 Marker header for debug (legacy path)
+            headers["X-Downloader"] = "legacy"
+
+            # ✅ HEAD = headers only (no body). Decrement will happen in finally.
             if request.method == "HEAD":
-                work_loads[client_id] -= 1
                 return web.Response(status=206 if not full_range else 200, headers=headers)
 
-            # ✅ Prepare streaming response
+            # ✅ Prepare streaming response (legacy)
             response = web.StreamResponse(status=206 if not full_range else 200, headers=headers)
             await response.prepare(request)
 
@@ -237,7 +290,7 @@ async def media_delivery(request: web.Request):
             bytes_sent = 0
             bytes_to_skip = start % CLIENT_CHUNK_SIZE
 
-            # 🚀 Stream from Telegram
+            # 🚀 Stream from Telegram (legacy fallback)
             async for chunk in streamer.stream_file(message_id, offset=start, limit=content_length):
                 if bytes_to_skip:
                     if len(chunk) <= bytes_to_skip:
@@ -257,7 +310,6 @@ async def media_delivery(request: web.Request):
                         await response.write(write_buffer)
                         await response.drain()
                         write_buffer = bytearray()
-                        # Slight yield every ~3MB to keep async smooth
                         if bytes_sent % (3 * CLIENT_CHUNK_SIZE) == 0:
                             await asyncio.sleep(0)
                     except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
@@ -279,28 +331,39 @@ async def media_delivery(request: web.Request):
                 except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
                     logger.warning("⚠️ Client disconnected during final flush.")
 
-            await response.write_eof()
+            # ✅ EOF: ignore if client already closed connection
+            try:
+                await response.write_eof()
+            except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                logger.info("Client closed connection before EOF; ignoring.")
 
         except (FileNotFound, InvalidHash):
             raise
-
         except Exception as e:
             error_id = secrets.token_hex(6)
             logger.error(f"Stream error {error_id}: {e}", exc_info=True)
             raise web.HTTPInternalServerError(text=f"Streaming error: {error_id}") from e
-
         finally:
-            work_loads[client_id] -= 1
-
+            work_loads[client_id] = max(0, work_loads.get(client_id, 1) - 1)
         return response
 
     except (InvalidHash, FileNotFound):
         raise web.HTTPNotFound(text="Resource not found")
-
     except Exception as e:
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
+
+
+
+
+
+
+
+
+
+
+
 
 
 
