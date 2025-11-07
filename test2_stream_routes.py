@@ -146,7 +146,6 @@ async def media_delivery(request: web.Request):
                                     chat_id = int(str(chat_id).replace("@", "").strip())
 
                                     # pick client for hybrid
-                                    hybrid_cli = None
                                     if USE_ALT_CLIENT and len(multi_clients) > 1:
                                         alt_id = (client_id + 1) % len(multi_clients)
                                         hybrid_cli = multi_clients[alt_id]
@@ -154,12 +153,13 @@ async def media_delivery(request: web.Request):
                                     else:
                                         hybrid_cli = multi_clients[client_id]
 
-                                    if not getattr(hybrid_cli, "_is_connected", False):
-                                        await hybrid_cli.start()
+                                    # ✅ start safely (no crash if already connected)
+                                    await ensure_client_started(hybrid_cli)
 
                                     msg = await hybrid_cli.get_messages(chat_id, int(message_id))
-                                    # no resume_offset param (safe_download handles from start efficiently)
+                                    # no resume_offset param (safe_download manages its own strategy)
                                     return await stream_and_save(msg, request)
+
                                 except Exception as e:
                                     logger.error(f"Hybrid switch failed: {e}")
                                     break
@@ -214,19 +214,6 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
