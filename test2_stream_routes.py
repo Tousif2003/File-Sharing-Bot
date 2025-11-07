@@ -6,10 +6,11 @@ async def media_delivery(request: web.Request):
 
         # —— tunables via env ——
         SAFE_SWITCH_THRESHOLD_MBPS = float(os.getenv("SAFE_SWITCH_THRESHOLD_MBPS", "5"))  # default 5 MB/s
-        SAFE_SWITCH_DURATION_SEC   = int(os.getenv("SAFE_SWITCH_DURATION_SEC", "3"))      # default 3 seconds
-        ASYNC_YIELD_INTERVAL_MB    = int(os.getenv("ASYNC_YIELD_INTERVAL_MB", "3"))       # default 3 MB
+        SAFE_SWITCH_DURATION_SEC   = int(os.getenv("SAFE_SWITCH_DURATION_SEC", "3"))      # seconds below threshold
+        ASYNC_YIELD_INTERVAL_MB    = int(os.getenv("ASYNC_YIELD_INTERVAL_MB", "3"))       # yield every N MB written
+        USE_ALT_CLIENT             = os.getenv("SAFE_SWITCH_USE_ALT_CLIENT", "true").lower() == "true"
 
-        # ✅ Choose best Telegram client dynamically
+        # ✅ Choose least-loaded Telegram client
         client_id, streamer = select_optimal_client()
         work_loads[client_id] += 1
 
@@ -20,7 +21,7 @@ async def media_delivery(request: web.Request):
             except Exception:
                 pass
 
-            # 🎯 Fetch file info
+            # 🎯 Fetch file info & verify hash
             file_info = await streamer.get_file_info(message_id)
             if not file_info.get("unique_id"):
                 raise FileNotFound("File unique ID not found.")
@@ -56,7 +57,7 @@ async def media_delivery(request: web.Request):
             if status == 206:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-            # ✅ HEAD requests
+            # ✅ HEAD requests (metadata only)
             if request.method == "HEAD":
                 return web.Response(status=status, headers=headers)
 
@@ -71,12 +72,12 @@ async def media_delivery(request: web.Request):
             bytes_to_skip = start % CLIENT_CHUNK_SIZE
             dc_retries = 0
 
-            # 🧠 Auto-Hybrid: Speed-based monitoring setup
+            # 🧠 Auto-Hybrid: Speed-based monitoring
             last_check = time.time()
             last_bytes = 0
-            slow_count = 0
+            slow_count = 0  # consecutive seconds below threshold
 
-            # 🚀 Stream from Telegram
+            # 🚀 Stream from Telegram (with DC auto-recover & hybrid switch)
             while True:
                 try:
                     async for chunk in streamer.stream_file(
@@ -143,10 +144,21 @@ async def media_delivery(request: web.Request):
                                     if not chat_id:
                                         raise FileNotFound("Chat ID unavailable for fallback.")
                                     chat_id = int(str(chat_id).replace("@", "").strip())
-                                    cli = multi_clients[client_id]
-                                    if not getattr(cli, "_is_connected", False):
-                                        await cli.start()
-                                    msg = await cli.get_messages(chat_id, int(message_id))
+
+                                    # pick client for hybrid
+                                    hybrid_cli = None
+                                    if USE_ALT_CLIENT and len(multi_clients) > 1:
+                                        alt_id = (client_id + 1) % len(multi_clients)
+                                        hybrid_cli = multi_clients[alt_id]
+                                        logger.info(f"🔁 Hybrid using alternate client ID {alt_id}.")
+                                    else:
+                                        hybrid_cli = multi_clients[client_id]
+
+                                    if not getattr(hybrid_cli, "_is_connected", False):
+                                        await hybrid_cli.start()
+
+                                    msg = await hybrid_cli.get_messages(chat_id, int(message_id))
+                                    # no resume_offset param (safe_download handles from start efficiently)
                                     return await stream_and_save(msg, request)
                                 except Exception as e:
                                     logger.error(f"Hybrid switch failed: {e}")
@@ -202,6 +214,20 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
