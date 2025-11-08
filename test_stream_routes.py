@@ -1,3 +1,274 @@
+# Thunder/server/stream_routes.py
+
+import re
+import secrets
+import time
+from urllib.parse import quote, unquote
+import json
+import asyncio
+from aiohttp import web, ClientConnectionResetError 
+from aiohttp.web_exceptions import HTTPInternalServerError, HTTPNotFound
+import os
+
+from Thunder import __version__, StartTime
+from Thunder.bot import StreamBot, multi_clients, work_loads
+from Thunder.server.exceptions import FileNotFound, InvalidHash
+from Thunder.utils.custom_dl import ByteStreamer
+from Thunder.utils.logger import logger
+from Thunder.utils.render_template import render_page
+from Thunder.utils.time_format import get_readable_time
+
+# safe download ke functions 
+from Thunder.utils.safe_download import stream_and_save, get_state_snapshot
+from Thunder.utils import safe_download as _sd
+
+routes = web.RouteTableDef()
+
+SECURE_HASH_LENGTH = 6
+CHUNK_SIZE = 1024 * 1024
+MAX_CONCURRENT_PER_CLIENT = 8
+RANGE_REGEX = re.compile(r"bytes=(?P<start>\d*)-(?P<end>\d*)")
+PATTERN_HASH_FIRST = re.compile(
+    rf"^([a-zA-Z0-9_-]{{{SECURE_HASH_LENGTH}}})(\d+)(?:/.*)?$")
+PATTERN_ID_FIRST = re.compile(r"^(\d+)(?:/.*)?$")
+VALID_HASH_REGEX = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+streamers = {}
+
+async def ensure_client_started(cli):
+    """Start only if not already connected; ignore 'already connected' errors."""
+    try:
+        if hasattr(cli, "is_connected"):
+            if not cli.is_connected:
+                await cli.start()
+        else:
+            await cli.start()
+    except Exception as e:
+        s = str(e).lower()
+        if "already connected" in s or "already running" in s:
+            pass
+        else:
+            raise
+
+def choose_alt_client(curr_id: int):
+    """
+    Pick a different, least-loaded client for hybrid mode.
+    Falls back to current client if no alternative exists.
+    """
+    try:
+        candidates = [i for i in range(len(multi_clients)) if i != curr_id]
+        if not candidates:
+            return curr_id, multi_clients[curr_id]
+        # prefer least loaded among the others
+        best = min(candidates, key=lambda k: work_loads.get(k, 0))
+        return best, multi_clients[best]
+    except Exception:
+        return curr_id, multi_clients[curr_id]
+
+def select_optimal_client():
+    """
+    Least-loaded client choose kare. 
+    Returns: (client_id, client_instance)
+    """
+    if not work_loads:
+        return 0, multi_clients[0]
+    cid = min(work_loads, key=lambda k: work_loads.get(k, 0))
+    return cid, multi_clients[cid]
+
+def parse_range_header(range_header: str, file_size: int):
+    """
+    RFC7233-ish parser. Returns (start, end).
+    If no/invalid Range -> full file.
+    Ensures bounds within [0, file_size-1].
+    """
+    if not range_header or not range_header.startswith("bytes=") or not file_size:
+        return 0, max(0, file_size - 1)
+
+    m = re.match(r"bytes=(\d+)-(\d+)?", range_header)
+    if not m:
+        return 0, max(0, file_size - 1)
+
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else file_size - 1
+
+    if start < 0:
+        start = 0
+    if end >= file_size:
+        end = file_size - 1
+    if start > end:
+        # invalid range → fall back to full file
+        start, end = 0, file_size - 1
+    return start, end
+
+def parse_media_request(path, query):
+    """
+    Local fallback parser to extract message_id and secure_hash.
+    Supports paths like: /<message_id>/<file_name>?hash=<secure_hash>
+    """
+    parts = path.split("/", 1)
+    message_id = parts[0]
+    secure_hash = query.get("hash") or query.get("h") or ""
+    if not secure_hash and len(message_id) >= 6:
+        secure_hash = message_id[:6]
+    return message_id, secure_hash
+
+@routes.get("/hybrid-test")
+async def hybrid_test(request):
+    logger.warning("🧪 HYBRID TEST: Triggering safe_download handshake check...")
+    try:
+        # Try to import the safe download handler
+        from Thunder.utils.safe_download import stream_and_save
+
+        if callable(stream_and_save):
+            logger.info("✅ SafeDownload module imported successfully & ready!")
+            return web.Response(text="✅ SafeDownload module imported successfully & ready!")
+        else:
+            logger.error("❌ SafeDownload found but not callable!")
+            return web.Response(text="❌ SafeDownload found but not callable!")
+
+    except Exception as e:
+        logger.exception(f"❌ SafeDownload import failed: {e}")
+        return web.Response(text=f"❌ SafeDownload import failed: {e}")
+
+def get_streamer(client_id: int) -> ByteStreamer:
+    if client_id not in streamers:
+        streamers[client_id] = ByteStreamer(multi_clients[client_id])
+    return streamers[client_id]
+
+
+def parse_media_request(path: str, query: dict) -> tuple[int, str]:
+    clean_path = unquote(path).strip('/')
+
+    match = PATTERN_HASH_FIRST.match(clean_path)
+    if match:
+        try:
+            message_id = int(match.group(2))
+            secure_hash = match.group(1)
+            if (len(secure_hash) == SECURE_HASH_LENGTH and
+                    VALID_HASH_REGEX.match(secure_hash)):
+                return message_id, secure_hash
+        except ValueError as e:
+            raise InvalidHash(f"Invalid message ID format in path: {e}") from e
+
+    match = PATTERN_ID_FIRST.match(clean_path)
+    if match:
+        try:
+            message_id = int(match.group(1))
+            secure_hash = query.get("hash", "").strip()
+            if (len(secure_hash) == SECURE_HASH_LENGTH and
+                    VALID_HASH_REGEX.match(secure_hash)):
+                return message_id, secure_hash
+            else:
+                raise InvalidHash("Invalid or missing hash in query parameter")
+        except ValueError as e:
+            raise InvalidHash(f"Invalid message ID format in path: {e}") from e
+
+    raise InvalidHash("Invalid URL structure or missing hash")
+
+
+def select_optimal_client() -> tuple[int, ByteStreamer]:
+    if not work_loads:
+        raise web.HTTPInternalServerError(
+            text=("No available clients to handle the request. "
+                  "Please try again later."))
+
+    available_clients = [
+        (cid, load) for cid, load in work_loads.items()
+        if load < MAX_CONCURRENT_PER_CLIENT]
+
+    if available_clients:
+        client_id = min(available_clients, key=lambda x: x[1])[0]
+    else:
+        client_id = min(work_loads, key=work_loads.get)
+
+    return client_id, get_streamer(client_id)
+
+
+def parse_range_header(range_header: str, file_size: int) -> tuple[int, int]:
+    if not range_header:
+        return 0, file_size - 1
+
+    match = RANGE_REGEX.match(range_header)
+    if not match:
+        raise web.HTTPBadRequest(text=f"Invalid range header: {range_header}")
+
+    start_str = match.group("start")
+    end_str = match.group("end")
+    if start_str:
+        start = int(start_str)
+        end = int(end_str) if end_str else file_size - 1
+    else:
+        if not end_str:
+            raise web.HTTPBadRequest(text=f"Invalid range header: {range_header}")
+        suffix_len = int(end_str)
+        if suffix_len <= 0:
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{file_size}"})
+        start = max(file_size - suffix_len, 0)
+        end = file_size - 1
+
+    if start < 0 or end >= file_size or start > end:
+        raise web.HTTPRequestRangeNotSatisfiable(
+            headers={"Content-Range": f"bytes */{file_size}"}
+        )
+
+    return start, end
+
+
+@routes.get("/", allow_head=True)
+
+async def root_redirect(request):
+    raise web.HTTPFound("https://telegram.me/FilmyMod123")
+
+
+@routes.get("/statxx", allow_head=True)
+async def status_endpoint(request):
+    uptime = time.time() - StartTime
+    total_load = sum(work_loads.values())
+
+    workload_distribution = {str(k): v for k, v in sorted(work_loads.items())}
+
+    return web.Response(
+        text=json.dumps({
+            "server": {
+                "status": "operational",
+                "version": __version__,
+                "uptime": get_readable_time(uptime)
+            },
+            "telegram_bot": {
+                "username": f"@{StreamBot.username}",
+                "active_clients": len(multi_clients)
+            },
+            "resources": {
+                "total_workload": total_load,
+                "workload_distribution": workload_distribution
+            }
+        }, indent=2),
+        content_type='application/json'
+    )
+
+@routes.get(r"/watch/{path:.+}", allow_head=True)
+async def media_preview(request: web.Request):
+    try:
+        path = request.match_info["path"]
+        message_id, secure_hash = parse_media_request(path, request.query)
+
+        rendered_page = await render_page(
+            message_id, secure_hash, requested_action='stream')
+        return web.Response(text=rendered_page, content_type='text/html')
+
+    except (InvalidHash, FileNotFound) as e:
+        logger.debug(
+            f"Client error in preview: {type(e).__name__} - {e}",
+            exc_info=True)
+        raise web.HTTPNotFound(text="Resource not found") from e
+    except Exception as e:
+
+        error_id = secrets.token_hex(6)
+        logger.error(f"Preview error {error_id}: {e}", exc_info=True)
+        raise web.HTTPInternalServerError(
+            text=f"Server error occurred: {error_id}") from e
+
+
 @routes.get(r"/{path:.+}", allow_head=True)
 async def media_delivery(request: web.Request):
     # small helper: start client safely (no crash if already running)
@@ -19,10 +290,12 @@ async def media_delivery(request: web.Request):
         message_id, secure_hash = parse_media_request(path, request.query)
 
         # —— tunables via env ——
-        SAFE_SWITCH_THRESHOLD_MBPS = float(os.getenv("SAFE_SWITCH_THRESHOLD_MBPS", "5"))
-        SAFE_SWITCH_DURATION_SEC   = int(os.getenv("SAFE_SWITCH_DURATION_SEC", "3"))
-        ASYNC_YIELD_INTERVAL_MB    = int(os.getenv("ASYNC_YIELD_INTERVAL_MB", "3"))
+        SAFE_SWITCH_THRESHOLD_MBPS = float(os.getenv("SAFE_SWITCH_THRESHOLD_MBPS", "999"))
+        SAFE_SWITCH_DURATION_SEC   = int(os.getenv("SAFE_SWITCH_DURATION_SEC", "4"))
+        ASYNC_YIELD_INTERVAL_MB    = int(os.getenv("ASYNC_YIELD_INTERVAL_MB", "1"))
         USE_ALT_CLIENT             = os.getenv("SAFE_SWITCH_USE_ALT_CLIENT", "true").lower() == "true"
+        # 🛡️ stall watchdog: no-progress cutoff (client will retry with Range)
+        STALL_DEADLINE_SEC         = int(os.getenv("STALL_DEADLINE_SEC", "15"))
 
         # Choose least-loaded client
         client_id, streamer = select_optimal_client()
@@ -95,6 +368,9 @@ async def media_delivery(request: web.Request):
             last_bytes = 0
             slow_count = 0
 
+            # 🛡️ stall watchdog (update on every progress)
+            last_progress_ts = time.time()
+
             while True:
                 try:
                     # IMPORTANT: start + bytes_sent, limit = remaining in requested window
@@ -115,6 +391,10 @@ async def media_delivery(request: web.Request):
                         remaining = content_length - bytes_sent
                         if len(chunk) > remaining:
                             chunk = chunk[:remaining]
+
+                        # progress happened
+                        if chunk:
+                            last_progress_ts = time.time()
 
                         write_buffer.extend(chunk)
                         if len(write_buffer) >= CLIENT_CHUNK_SIZE:
@@ -197,6 +477,24 @@ async def media_delivery(request: web.Request):
                                     logger.error(f"Hybrid switch failed (continuing normal stream): {e}")
                                     # fall-through: continue normal streaming
 
+                            # 🛡️ STALL WATCHDOG: no progress for too long → close so client can resume via Range
+                            if (now - last_progress_ts) > STALL_DEADLINE_SEC and bytes_sent < content_length:
+                                logger.warning(
+                                    f"⏳ No progress for {now - last_progress_ts:.1f}s "
+                                    f"(sent {bytes_sent}/{content_length}). Closing to trigger client resume."
+                                )
+                                try:
+                                    if write_buffer:
+                                        await response.write(write_buffer)
+                                        await response.drain()
+                                except Exception:
+                                    pass
+                                try:
+                                    await response.write_eof()
+                                except Exception:
+                                    pass
+                                return  # client will immediately retry with Range
+
                             last_check = now
                             last_bytes = bytes_sent
 
@@ -247,6 +545,10 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
+
+
+
+
 
 
 
