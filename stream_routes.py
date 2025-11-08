@@ -34,6 +34,83 @@ VALID_HASH_REGEX = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 streamers = {}
 
+async def ensure_client_started(cli):
+    """Start only if not already connected; ignore 'already connected' errors."""
+    try:
+        if hasattr(cli, "is_connected"):
+            if not cli.is_connected:
+                await cli.start()
+        else:
+            await cli.start()
+    except Exception as e:
+        s = str(e).lower()
+        if "already connected" in s or "already running" in s:
+            pass
+        else:
+            raise
+
+def choose_alt_client(curr_id: int):
+    """
+    Pick a different, least-loaded client for hybrid mode.
+    Falls back to current client if no alternative exists.
+    """
+    try:
+        candidates = [i for i in range(len(multi_clients)) if i != curr_id]
+        if not candidates:
+            return curr_id, multi_clients[curr_id]
+        # prefer least loaded among the others
+        best = min(candidates, key=lambda k: work_loads.get(k, 0))
+        return best, multi_clients[best]
+    except Exception:
+        return curr_id, multi_clients[curr_id]
+
+def select_optimal_client():
+    """
+    Least-loaded client choose kare. 
+    Returns: (client_id, client_instance)
+    """
+    if not work_loads:
+        return 0, multi_clients[0]
+    cid = min(work_loads, key=lambda k: work_loads.get(k, 0))
+    return cid, multi_clients[cid]
+
+def parse_range_header(range_header: str, file_size: int):
+    """
+    RFC7233-ish parser. Returns (start, end).
+    If no/invalid Range -> full file.
+    Ensures bounds within [0, file_size-1].
+    """
+    if not range_header or not range_header.startswith("bytes=") or not file_size:
+        return 0, max(0, file_size - 1)
+
+    m = re.match(r"bytes=(\d+)-(\d+)?", range_header)
+    if not m:
+        return 0, max(0, file_size - 1)
+
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else file_size - 1
+
+    if start < 0:
+        start = 0
+    if end >= file_size:
+        end = file_size - 1
+    if start > end:
+        # invalid range → fall back to full file
+        start, end = 0, file_size - 1
+    return start, end
+
+def parse_media_request(path, query):
+    """
+    Local fallback parser to extract message_id and secure_hash.
+    Supports paths like: /<message_id>/<file_name>?hash=<secure_hash>
+    """
+    parts = path.split("/", 1)
+    message_id = parts[0]
+    secure_hash = query.get("hash") or query.get("h") or ""
+    if not secure_hash and len(message_id) >= 6:
+        secure_hash = message_id[:6]
+    return message_id, secure_hash
+
 @routes.get("/progress", allow_head=True)
 async def progress_handler(request):
     chat_id = request.query.get("chat_id")
@@ -191,139 +268,251 @@ async def media_preview(request: web.Request):
 
 @routes.get(r"/{path:.+}", allow_head=True)
 async def media_delivery(request: web.Request):
+    # small helper: start client safely (no crash if already running)
+    async def ensure_client_started(cli):
+        try:
+            # pyrogram v2 usually exposes .is_connected (bool property); also keep _is_connected fallback
+            already = bool(getattr(cli, "is_connected", False) or getattr(cli, "_is_connected", False))
+            if not already:
+                await cli.start()
+        except Exception as e:
+            s = str(e).lower()
+            if "already connected" in s or "already running" in s:
+                pass
+            else:
+                raise
+
     try:
         path = request.match_info["path"]
         message_id, secure_hash = parse_media_request(path, request.query)
 
-        # ✅ Choose best Telegram client dynamically
+        # —— tunables via env ——
+        SAFE_SWITCH_THRESHOLD_MBPS = float(os.getenv("SAFE_SWITCH_THRESHOLD_MBPS", "5"))
+        SAFE_SWITCH_DURATION_SEC   = int(os.getenv("SAFE_SWITCH_DURATION_SEC", "3"))
+        ASYNC_YIELD_INTERVAL_MB    = int(os.getenv("ASYNC_YIELD_INTERVAL_MB", "3"))
+        USE_ALT_CLIENT             = os.getenv("SAFE_SWITCH_USE_ALT_CLIENT", "true").lower() == "true"
+        # 🛡️ stall watchdog: no-progress cutoff (client will retry with Range)
+        STALL_DEADLINE_SEC         = int(os.getenv("STALL_DEADLINE_SEC", "15"))
+
+        # Choose least-loaded client
         client_id, streamer = select_optimal_client()
         work_loads[client_id] += 1
 
         try:
-            # 🔥 Warm Telegram connection (avoid cold-start lag)
+            # Warm connection (best-effort)
             try:
                 await streamer.get_me()
             except Exception:
                 pass
 
-            # 🎯 Fetch file info
+            # File info + hash check
             file_info = await streamer.get_file_info(message_id)
             if not file_info.get("unique_id"):
                 raise FileNotFound("File unique ID not found.")
             if file_info["unique_id"][:SECURE_HASH_LENGTH] != secure_hash:
                 raise InvalidHash("Hash mismatch with file unique ID.")
 
-            file_size = file_info.get("file_size", 0)
-            if not file_size:
+            file_size = int(file_info.get("file_size") or 0)
+            if file_size <= 0:
                 raise FileNotFound("File size unavailable or zero.")
 
-            # ✅ SAFE HANDOFF: use safe_download ONLY for GET & when NO Range (resume/HEAD => legacy)
-            if request.method == "GET" and not request.headers.get("Range"):
-                try:
-                    # ✅ Strong chat_id resolver: StreamBot → ?chat_id → BIN_CHANNEL (env)
-                    chat_id = (
-                        getattr(StreamBot, "chat_id", None) or
-                        request.query.get("chat_id") or
-                        os.getenv("BIN_CHANNEL")
-                    )
-                    if not chat_id:
-                        raise FileNotFound("Chat ID not available for fetching message.")
-                    # ✅ sanitize and cast to int
-                    chat_id = int(str(chat_id).replace("@", "").strip())
-
-                    # ensure client is started before get_messages
-                    cli = multi_clients[client_id]
-                    try:
-                        if not getattr(cli, "_is_connected", False):
-                            await cli.start()
-                    except Exception:
-                        pass
-
-                    # 📥 fetch original message and handoff to safe downloader
-                    msg = await cli.get_messages(chat_id, int(message_id))
-                    # 🔥 DC-aware, governor, retries, batched writes
-                    return await stream_and_save(msg, request)
-
-                except Exception as _e:
-                    logger.warning(
-                        f"⚠️ safe_download handoff failed, using legacy streamer. Error: {_e}"
-                    )
-
-            # 🎯 Handle Range header (legacy resume/parallel path)
+            # ===== Resume logic (Range parsing) =====
             range_header = request.headers.get("Range", "")
             start, end = parse_range_header(range_header, file_size)
             content_length = end - start + 1
-            full_range = (start == 0 and end == file_size - 1)
 
-            filename = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
+            # Agar full file hi maangi gayi hai to 200 bhejo (Content-Range mat bhejna)
+            full_range = (start == 0 and end == file_size - 1)
+            if full_range:
+                range_header = ""
+
+            filename  = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
             encoded_filename = quote(filename)
 
-            # ✅ RFC-correct headers
+            # Force download + resume-friendly headers
+            status = 200 if not range_header else 206
             headers = {
                 "Content-Type": "application/octet-stream",
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Accept-Ranges": "bytes",
-                "Cache-Control": "public, max-age=31536000",
+                "Cache-Control": "public, max-age=31536000, immutable",
                 "Connection": "keep-alive",
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "strict-origin-when-cross-origin",
                 "X-Accel-Buffering": "no",
                 "Content-Length": str(content_length),
             }
-            if not full_range:
+            if status == 206:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-            # 🔎 Marker header for debug (legacy path)
-            headers["X-Downloader"] = "legacy"
-
-            # ✅ HEAD = headers only (no body). Decrement will happen in finally.
+            # HEAD -> headers only
             if request.method == "HEAD":
-                return web.Response(status=206 if not full_range else 200, headers=headers)
+                return web.Response(status=status, headers=headers)
 
-            # ✅ Prepare streaming response (legacy)
-            response = web.StreamResponse(status=206 if not full_range else 200, headers=headers)
+            # Prepare response
+            response = web.StreamResponse(status=status, headers=headers)
             await response.prepare(request)
 
-            # ⚙️ Chunk + buffering setup
-            CLIENT_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB chunks for stability
+            # Streaming setup
+            CLIENT_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
             write_buffer = bytearray()
             bytes_sent = 0
             bytes_to_skip = start % CLIENT_CHUNK_SIZE
+            dc_retries = 0
 
-            # 🚀 Stream from Telegram (legacy fallback)
-            async for chunk in streamer.stream_file(message_id, offset=start, limit=content_length):
-                if bytes_to_skip:
-                    if len(chunk) <= bytes_to_skip:
-                        bytes_to_skip -= len(chunk)
+            # Speed monitor (for hybrid switch)
+            last_check = time.time()
+            last_bytes = 0
+            slow_count = 0
+
+            # 🛡️ stall watchdog (update on every progress)
+            last_progress_ts = time.time()
+
+            while True:
+                try:
+                    # IMPORTANT: start + bytes_sent, limit = remaining in requested window
+                    async for chunk in streamer.stream_file(
+                        message_id,
+                        offset=start + bytes_sent,
+                        limit=content_length - bytes_sent
+                    ):
+                        # Align to our client chunk boundary if needed
+                        if bytes_to_skip:
+                            if len(chunk) <= bytes_to_skip:
+                                bytes_to_skip -= len(chunk)
+                                continue
+                            chunk = chunk[bytes_to_skip:]
+                            bytes_to_skip = 0
+
+                        # Do not exceed requested range
+                        remaining = content_length - bytes_sent
+                        if len(chunk) > remaining:
+                            chunk = chunk[:remaining]
+
+                        # progress happened
+                        if chunk:
+                            last_progress_ts = time.time()
+
+                        write_buffer.extend(chunk)
+                        if len(write_buffer) >= CLIENT_CHUNK_SIZE:
+                            try:
+                                await response.write(write_buffer)
+                                await response.drain()
+                                write_buffer = bytearray()
+
+                                # Periodic yield for smoother IO
+                                if bytes_sent and bytes_sent % (ASYNC_YIELD_INTERVAL_MB * CLIENT_CHUNK_SIZE) == 0:
+                                    await asyncio.sleep(0)
+                            except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                                logger.warning("⚠️ Client disconnected mid-stream.")
+                                break
+                            except BufferError:
+                                logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
+                                write_buffer = bytearray()
+
+                        bytes_sent += len(chunk)
+
+                        # ---- Speed monitor (MB/s) for hybrid fallback ----
+                        now = time.time()
+                        if now - last_check >= 1:
+                            elapsed = now - last_check
+                            downloaded = bytes_sent - last_bytes
+                            speed_MBps = (downloaded / (1024 * 1024)) / max(0.001, elapsed)
+
+                            if speed_MBps < SAFE_SWITCH_THRESHOLD_MBPS:
+                                slow_count += 1
+                            else:
+                                slow_count = 0
+
+                            logger.info(f"⚙️ Stream speed: {speed_MBps:.2f} MB/s | SlowCount={slow_count}")
+
+                            # ⚠️ Hybrid only if nothing has been sent yet (to avoid partial/corrupt file)
+                            if slow_count >= SAFE_SWITCH_DURATION_SEC and bytes_sent == 0 and len(write_buffer) == 0:
+                                logger.warning(
+                                    f"⚡ Speed too low ({speed_MBps:.2f} MB/s) — switching to SafeDownload hybrid mode (pre-send)."
+                                )
+                                try:
+                                    chat_id = (
+                                        getattr(StreamBot, "chat_id", None)
+                                        or request.query.get("chat_id")
+                                        or os.getenv("BIN_CHANNEL")
+                                    )
+                                    if not chat_id:
+                                        raise FileNotFound("Chat ID unavailable for fallback.")
+                                    chat_id = int(str(chat_id).replace("@", "").strip())
+
+                                    # Prefer alternate client for hybrid if available (dict-safe rotation)
+                                    keys = list(multi_clients.keys())
+                                    try:
+                                        cur_ix = keys.index(client_id)
+                                    except ValueError:
+                                        cur_ix = 0
+                                    alt_id = keys[(cur_ix + 1) % len(keys)] if (USE_ALT_CLIENT and len(keys) > 1) else client_id
+                                    hybrid_cli = multi_clients[alt_id]
+                                    if alt_id != client_id:
+                                        logger.info(f"🔁 Hybrid using alternate client ID {alt_id}.")
+
+                                    # start safely (no crash if already connected)
+                                    await ensure_client_started(hybrid_cli)
+
+                                    # fetch original message & handoff (safe downloader builds its own response)
+                                    msg = await hybrid_cli.get_messages(chat_id, int(message_id))
+                                    if not msg:
+                                        raise FileNotFound(f"Failed to fetch message {message_id} from chat {chat_id}")
+
+                                    # close current response gracefully before switching handler
+                                    try:
+                                        if write_buffer:
+                                            await response.write(write_buffer)
+                                            await response.drain()
+                                    except Exception:
+                                        pass
+
+                                    return await stream_and_save(msg, request)
+
+                                except Exception as e:
+                                    logger.error(f"Hybrid switch failed (continuing normal stream): {e}")
+                                    # fall-through: continue normal streaming
+
+                            # 🛡️ STALL WATCHDOG: no progress for too long → close so client can resume via Range
+                            if (now - last_progress_ts) > STALL_DEADLINE_SEC and bytes_sent < content_length:
+                                logger.warning(
+                                    f"⏳ No progress for {now - last_progress_ts:.1f}s "
+                                    f"(sent {bytes_sent}/{content_length}). Closing to trigger client resume."
+                                )
+                                try:
+                                    if write_buffer:
+                                        await response.write(write_buffer)
+                                        await response.drain()
+                                except Exception:
+                                    pass
+                                try:
+                                    await response.write_eof()
+                                except Exception:
+                                    pass
+                                return  # client will immediately retry with Range
+
+                            last_check = now
+                            last_bytes = bytes_sent
+
+                        if bytes_sent >= content_length:
+                            break
+
+                    break  # success; leave retry loop
+
+                except Exception as e:
+                    # Retry on DC migration hints
+                    if any(dc in str(e) for dc in ["PHONE_MIGRATE", "NETWORK_MIGRATE", "USER_MIGRATE"]):
+                        dc_retries += 1
+                        if dc_retries > 3:
+                            raise
+                        logger.warning(f"🌐 DC mismatch detected — reconnecting attempt {dc_retries}")
+                        await asyncio.sleep(1.5)
                         continue
-                    chunk = chunk[bytes_to_skip:]
-                    bytes_to_skip = 0
+                    else:
+                        raise
 
-                remaining = content_length - bytes_sent
-                if len(chunk) > remaining:
-                    chunk = chunk[:remaining]
-
-                # ✅ Buffered writing
-                write_buffer.extend(chunk)
-                if len(write_buffer) >= CLIENT_CHUNK_SIZE:
-                    try:
-                        await response.write(write_buffer)
-                        await response.drain()
-                        write_buffer = bytearray()
-                        if bytes_sent % (3 * CLIENT_CHUNK_SIZE) == 0:
-                            await asyncio.sleep(0)
-                    except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
-                        logger.warning("⚠️ Client disconnected mid-stream.")
-                        break
-                    except BufferError:
-                        logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
-                        write_buffer = bytearray()
-
-                bytes_sent += len(chunk)
-                if bytes_sent >= content_length:
-                    break
-
-            # ✅ Final flush
+            # Final flush
             if write_buffer:
                 try:
                     await response.write(write_buffer)
@@ -331,7 +520,6 @@ async def media_delivery(request: web.Request):
                 except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
                     logger.warning("⚠️ Client disconnected during final flush.")
 
-            # ✅ EOF: ignore if client already closed connection
             try:
                 await response.write_eof()
             except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
@@ -345,6 +533,7 @@ async def media_delivery(request: web.Request):
             raise web.HTTPInternalServerError(text=f"Streaming error: {error_id}") from e
         finally:
             work_loads[client_id] = max(0, work_loads.get(client_id, 1) - 1)
+
         return response
 
     except (InvalidHash, FileNotFound):
@@ -353,6 +542,19 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
