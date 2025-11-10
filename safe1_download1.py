@@ -1,13 +1,13 @@
 # Thunder/utils/safe_download.py
 # VPS-like downloader: DC-aware, single-lane raw chunking (upload.GetFile),
-# proper HTTP Range/HEAD, forced download headers, and gentle stall handling.
-# Includes boot-time self-check log to confirm wiring with stream_routes.
+# proper HTTP Range/HEAD, forced download headers, stall watchdog,
+# and now ADAPTIVE CHUNKING to survive TG -500 TIMEOUT & slow paths.
 
 import os
 import asyncio
 import logging
 import time
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 
 from aiohttp import web
 from pyrogram.errors import FileReferenceExpired, FileMigrate, FloodWait
@@ -22,10 +22,17 @@ logger = logging.getLogger("ThunderBot")
 # =========================
 # Tunables (env overrides)
 # =========================
-# 1 MB chunks are safe for most mobile networks and players
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE_NORMAL", str(1024 * 1024)))
+# Base (normal) and fallback chunk sizes
+CHUNK_SIZE_NORMAL    = int(os.getenv("CHUNK_SIZE_NORMAL",  str(1024 * 1024)))   # 1 MB
+CHUNK_SIZE_FALLBACK  = int(os.getenv("CHUNK_SIZE_FALLBACK", str(768 * 1024)))   # 768 KB
+DOWNGRADE_TIMEOUTS   = int(os.getenv("DOWNGRADE_TIMEOUTS", "1"))                # timeouts before downgrade
 
-# Always force download content-type (prevents inline “streaming” quirks)
+# Adaptive speed thresholds (MB/s)
+LOW_SPEED_MBPS_THRESHOLD  = float(os.getenv("LOW_SPEED_MBPS_THRESHOLD", "2.5")) # below this → streak reset
+RECOVERY_MBPS_THRESHOLD   = float(os.getenv("RECOVERY_MBPS_THRESHOLD", "5.5"))  # stable above → restore
+GOOD_SECONDS_TO_UPSCALE   = int(os.getenv("GOOD_SECONDS_TO_UPSCALE", "6"))      # seconds needed to restore
+
+# Always force download content-type (avoid inline quirks)
 FORCE_OCTET_STREAM = os.getenv("FORCE_OCTET_STREAM", "true").lower() == "true"
 
 # If no progress for this many seconds, close connection — browser will retry via Range
@@ -34,6 +41,49 @@ STALL_DEADLINE_SEC = int(os.getenv("STALL_DEADLINE_SEC", "15"))
 # Write/drain timeouts so we don’t hang forever on slow/closed clients
 WRITE_TIMEOUT_SEC = int(os.getenv("WRITE_TIMEOUT_SEC", "15"))
 EOF_TIMEOUT_SEC   = int(os.getenv("EOF_TIMEOUT_SEC", "8"))
+
+
+# Default TTL = 12 hours (configurable via ENV)
+HYBRID_LOCK_TTL = int(os.getenv("HYBRID_LOCK_TTL", "14400"))  # 4h default
+hybrid_lock_map: Dict[str, float] = {}  # {file_unique_id: expiry_epoch}
+
+def _hybrid_lock_cleanup() -> None:
+    """Remove expired locks."""
+    now = time.time()
+    expired = [k for k, v in hybrid_lock_map.items() if v <= now]
+    for k in expired:
+        hybrid_lock_map.pop(k, None)
+
+def set_hybrid_lock(uid: str, ttl: int | None = None) -> None:
+    """Activate hybrid mode lock for a file UID."""
+    if not uid:
+        return
+    _hybrid_lock_cleanup()
+    expiry = time.time() + int(ttl or HYBRID_LOCK_TTL)
+    hybrid_lock_map[uid] = expiry
+    hours = (int(ttl or HYBRID_LOCK_TTL)) // 3600
+    try:
+        logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hours}h")
+    except Exception:
+        pass
+
+def clear_hybrid_lock(uid: str) -> bool:
+    """Remove hybrid mode lock manually."""
+    _hybrid_lock_cleanup()
+    existed = uid in hybrid_lock_map
+    hybrid_lock_map.pop(uid, None)
+    if existed:
+        try:
+            logger.info(f"🔓 [HybridLock] Cleared {uid[:10]}...")
+        except Exception:
+            pass
+    return existed
+
+def is_hybrid_locked(uid: str) -> bool:
+    """Return True if UID currently locked."""
+    _hybrid_lock_cleanup()
+    exp = hybrid_lock_map.get(uid)
+    return bool(exp and exp > time.time())
 
 
 # =========================
@@ -51,14 +101,11 @@ def _pick_media(msg):
         or getattr(msg, "voice", None)
         or getattr(msg, "photo", None)
     )
-
     if media is None:
         return None, None
 
-    # File name
     name = getattr(media, "file_name", None)
     if not name:
-        # voice / photo don't have file_name; fallback
         base = "file"
         ext = ""
         if hasattr(media, "mime_type") and media.mime_type:
@@ -76,7 +123,6 @@ def _pick_media(msg):
             elif "pdf" in mt:
                 ext = ".pdf"
         name = f"{base}_{msg.id}{ext}"
-
     return media, name
 
 
@@ -85,27 +131,32 @@ def _build_location_and_size(media):
     Build raw input file location for upload.GetFile and return (location, size).
     Works for document/video/audio/voice and photo.
     """
-    # Document-like (document/video/audio/voice)
     if hasattr(media, "file_reference") and hasattr(media, "id") and hasattr(media, "access_hash"):
-        loc = InputDocumentFileLocation(
-            id=media.id,
-            access_hash=media.access_hash,
-            file_reference=media.file_reference,
-            thumb_size=""  # original
-        )
-        size = getattr(media, "file_size", None)
-        return loc, int(size) if size is not None else None
+        # Document-like (document/video/audio/voice)
+        try:
+            loc = InputDocumentFileLocation(
+                id=media.id,
+                access_hash=media.access_hash,
+                file_reference=media.file_reference,
+                thumb_size=""
+            )
+            size = getattr(media, "file_size", None)
+            return loc, int(size) if size is not None else None
+        except Exception:
+            pass
 
-    # Photo
-    if hasattr(media, "file_reference") and hasattr(media, "id") and hasattr(media, "access_hash"):
-        loc = InputPhotoFileLocation(
-            id=media.id,
-            access_hash=media.access_hash,
-            file_reference=media.file_reference,
-            thumb_size=""  # original
-        )
-        size = getattr(media, "file_size", None)
-        return loc, int(size) if size is not None else None
+        # Photo
+        try:
+            loc = InputPhotoFileLocation(
+                id=media.id,
+                access_hash=media.access_hash,
+                file_reference=media.file_reference,
+                thumb_size=""
+            )
+            size = getattr(media, "file_size", None)
+            return loc, int(size) if size is not None else None
+        except Exception:
+            pass
 
     return None, None
 
@@ -125,38 +176,27 @@ def _parse_http_range(range_header: str, total_size: int) -> Tuple[int, int]:
 
         start_s, end_s = spec.split("-", 1)
         if start_s and end_s:
-            start = int(start_s)
-            end = int(end_s)
+            start = int(start_s); end = int(end_s)
         elif start_s and not end_s:
-            # bytes=start-
-            start = int(start_s)
-            end = total_size - 1
+            start = int(start_s); end = total_size - 1
         elif not start_s and end_s:
-            # bytes=-N (last N bytes)
             suffix = int(end_s)
             if suffix <= 0:
                 return 0, total_size - 1
-            start = max(0, total_size - suffix)
-            end = total_size - 1
+            start = max(0, total_size - suffix); end = total_size - 1
         else:
             return 0, total_size - 1
 
-        if start < 0:
-            start = 0
-        if end >= total_size:
-            end = total_size - 1
-        if start > end:
-            return 0, total_size - 1
+        if start < 0: start = 0
+        if end >= total_size: end = total_size - 1
+        if start > end: return 0, total_size - 1
         return start, end
-
     except Exception:
         return 0, max(0, total_size - 1)
 
 
 async def _refresh_message(msg):
-    """
-    Re-fetch the same message to refresh file_reference when it expires.
-    """
+    """Re-fetch the same message to refresh file_reference when it expires."""
     try:
         cli = msg._client
         chat_id = msg.chat.id if msg.chat else None
@@ -182,7 +222,8 @@ async def stream_and_save(msg, request: web.Request):
     - Correct Content-Length for the requested window.
     - Single-lane ordered chunks via upload.GetFile (player-friendly).
     - Auto refresh file_reference, auto-handle FileMigrate/DC hops.
-    - Gentle stall watchdog to avoid 99% stuck for flaky clients.
+    - Stall watchdog to avoid 99% stuck for flaky clients.
+    - NEW: Adaptive chunk size (1MB → 512KB on timeouts/slow; restore on stable fast).
     """
     media, file_name = _pick_media(msg)
     if not media:
@@ -197,8 +238,7 @@ async def stream_and_save(msg, request: web.Request):
     start, end = _parse_http_range(range_header, total_size)
     full_range = (start == 0 and end == total_size - 1)
     if full_range:
-        # Normalize to 200 path (some clients send Range: bytes=0- by default)
-        range_header = ""
+        range_header = ""  # normalize
 
     content_length = (end - start + 1)
     status = 206 if range_header else 200
@@ -235,23 +275,40 @@ async def stream_and_save(msg, request: web.Request):
     last_progress_ts = time.time()
     last_progress_bytes = 0
 
+    # Adaptive state
+    cur_chunk_size = CHUNK_SIZE_NORMAL
+    timeout_count = 0
+    good_speed_streak = 0
+
     # for quick aborts if the client leaves
     transport = request.transport
 
-    logger.info(f"▶ Safe stream: {file_name} | {start}-{end}/{total_size} | status={status}")
+    def _ad_log(msg: str):
+        logger.info(f"⚙️ [Adaptive] {msg}")
+
+    logger.info(
+        f"▶ Safe stream: {file_name} | {start}-{end}/{total_size} | status={status} | "
+        f"chunk={cur_chunk_size//1024}KB"
+    )
 
     try:
+        # measure speed window
+        speed_last_check_t = time.time()
+        speed_last_bytes = 0
+
         while offset <= end:
             # client gone? abort quickly
             if transport is None or transport.is_closing():
                 logger.warning("🔌 Client transport closed — aborting safe stream.")
                 break
 
-            limit = min(CHUNK_SIZE, end - offset + 1)
+            limit = min(cur_chunk_size, end - offset + 1)
             try:
                 # raw upload.GetFile
                 res = await cli.invoke(GetFile(location=location, offset=offset, limit=limit))
                 chunk: Optional[bytes] = res.bytes
+                # success → reset timeout_count
+                # (we still might downgrade via speed logic below)
             except FileReferenceExpired:
                 logger.warning("⚠️ file_reference expired — refreshing message…")
                 msg = await _refresh_message(msg)
@@ -260,7 +317,6 @@ async def stream_and_save(msg, request: web.Request):
                 # retry same offset
                 continue
             except FileMigrate as e:
-                # Let Pyrogram handle reconnection internally; a small pause then retry
                 logger.warning(f"🌐 File migrated to DC{getattr(e, 'new_dc', '?')}; retrying…")
                 await asyncio.sleep(0.5)
                 continue
@@ -268,12 +324,26 @@ async def stream_and_save(msg, request: web.Request):
                 logger.warning(f"⏳ Flood wait {e.value}s during GetFile")
                 await asyncio.sleep(e.value)
                 continue
+            except Exception as e:
+                # handle generic TIMEOUT → count, and consider downgrade
+                if "TIMEOUT" in str(e).upper():
+                    timeout_count += 1
+                    logger.warning(f"⏱️ GetFile timeout ({timeout_count}/{DOWNGRADE_TIMEOUTS}) at offset {offset}")
+                    if timeout_count >= DOWNGRADE_TIMEOUTS and cur_chunk_size != CHUNK_SIZE_FALLBACK:
+                        cur_chunk_size = CHUNK_SIZE_FALLBACK
+                        _ad_log(f"Chunk size downgraded → {cur_chunk_size//1024} KB (due to repeated TIMEOUTs)")
+                        timeout_count = 0
+                    await asyncio.sleep(0.35)
+                    continue
+                # other errors → raise
+                raise
 
             if not chunk:
                 # Defensive: no data returned—brief sleep and retry once
                 await asyncio.sleep(0.15)
                 continue
 
+            # write
             try:
                 await _write_with_timeout(response, chunk)
             except asyncio.TimeoutError:
@@ -285,26 +355,57 @@ async def stream_and_save(msg, request: web.Request):
                     logger.warning("⚠️ Client disconnected mid-stream (after timeout).")
                     break
 
-            bytes_sent += len(chunk)
-            offset += len(chunk)
-            last_progress_ts = time.time()
+            # progress
+            b = len(chunk)
+            bytes_sent += b
+            offset += b
+            now = time.time()
 
-            # periodic drain checkpoint for buffer health
-            if bytes_sent - last_progress_bytes >= (4 * 1024 * 1024):  # ~4MB intervals
+            # stall watchdog
+            last_progress_ts = now
+
+            # periodic buffer health drain (every ~4MB sent)
+            if bytes_sent - last_progress_bytes >= (4 * 1024 * 1024):
                 try:
                     await asyncio.wait_for(response.drain(), timeout=WRITE_TIMEOUT_SEC)
                 except asyncio.TimeoutError:
                     logger.warning("⏱️ drain timeout at checkpoint — continuing")
                 last_progress_bytes = bytes_sent
 
-            # optional logging
-            now = time.time()
+            # optional progress log
             if now - last_log_t >= 3:
                 sent_mb = bytes_sent / (1024 * 1024)
-                logger.info(f"⏩ Sent {sent_mb:.2f} MB of {file_name}")
+                logger.info(f"⏩ Sent {sent_mb:.2f} MB of {file_name} (chunk={cur_chunk_size//1024}KB)")
                 last_log_t = now
 
-            # Stall watchdog: if no progress for too long, close so browser retries via Range
+            # ---- Adaptive speed window (per ~1s) ----
+            if now - speed_last_check_t >= 1:
+                elapsed = max(0.001, now - speed_last_check_t)
+                delta = bytes_sent - speed_last_bytes
+                speed_MBps = (delta / (1024 * 1024)) / elapsed
+
+                # good/low speed tracking
+                if speed_MBps < LOW_SPEED_MBPS_THRESHOLD:
+                    good_speed_streak = 0
+                else:
+                    good_speed_streak += 1
+
+                # if we are on fallback and speed is stable high for long enough → restore to normal
+                if (cur_chunk_size == CHUNK_SIZE_FALLBACK
+                        and good_speed_streak >= GOOD_SECONDS_TO_UPSCALE
+                        and speed_MBps >= RECOVERY_MBPS_THRESHOLD):
+                    cur_chunk_size = CHUNK_SIZE_NORMAL
+                    _ad_log(
+                        f"Chunk size restored → {cur_chunk_size//1024} KB "
+                        f"(stable {speed_MBps:.2f} MB/s for {GOOD_SECONDS_TO_UPSCALE}s)"
+                    )
+                    good_speed_streak = 0
+
+                # reset window
+                speed_last_check_t = now
+                speed_last_bytes = bytes_sent
+
+            # global stall cutoff (for flaky clients that pause near 99%)
             if STALL_DEADLINE_SEC > 0 and (now - last_progress_ts) > STALL_DEADLINE_SEC and offset <= end:
                 logger.warning(
                     f"⏳ No progress for {now - last_progress_ts:.1f}s "
@@ -328,7 +429,6 @@ async def stream_and_save(msg, request: web.Request):
         raise
     except ConnectionResetError:
         logger.warning("⚠️ Client disconnected mid-stream.")
-        # best-effort close
         try:
             await response.write_eof()
         except Exception:
@@ -343,21 +443,23 @@ def get_state_snapshot():
     """Lightweight status for debug endpoints."""
     return {
         "mode": "safe_download",
-        "chunk_size": CHUNK_SIZE,
+        "chunk_size_normal": CHUNK_SIZE_NORMAL,
+        "chunk_size_fallback": CHUNK_SIZE_FALLBACK,
         "forced_octet_stream": FORCE_OCTET_STREAM,
         "stall_deadline_sec": STALL_DEADLINE_SEC,
         "write_timeout_sec": WRITE_TIMEOUT_SEC,
         "eof_timeout_sec": EOF_TIMEOUT_SEC,
+        "low_speed_mbps": LOW_SPEED_MBPS_THRESHOLD,
+        "recovery_mbps": RECOVERY_MBPS_THRESHOLD,
+        "good_seconds_to_upscale": GOOD_SECONDS_TO_UPSCALE,
         "time": int(time.time()),
     }
+
 
 def recheck_clients_ready(tag: str = "manual"):
     """Log again whether SafeDownload + Pyrogram clients are fully ready."""
     try:
-        # 1) handler present?
         ok_handler = callable(globals().get("stream_and_save"))
-
-        # 2) client pool size
         try:
             from Thunder.bot import multi_clients
             if isinstance(multi_clients, dict):
@@ -370,19 +472,19 @@ def recheck_clients_ready(tag: str = "manual"):
             mc_count = 0
             logger.warning(f"⚠️ SafeDownload recheck ({tag}): multi_clients import failed: {e}")
 
-        # 3) pyrogram version (optional)
         try:
             import pyrogram
             pver = getattr(pyrogram, "__version__", "unknown")
         except Exception:
             pver = "unknown"
 
-        # 4) final log
         if ok_handler and mc_count > 0:
             logger.info(f"✅ SafeDownload ready ({tag}): handler=OK | clients={mc_count} | pyrogram={pver}")
         else:
-            logger.warning(f"⚠️ SafeDownload partial init ({tag}): handler={'OK' if ok_handler else 'MISSING'} | "
-                           f"clients={mc_count} | pyrogram={pver}")
+            logger.warning(
+                f"⚠️ SafeDownload partial init ({tag}): handler={'OK' if ok_handler else 'MISSING'} | "
+                f"clients={mc_count} | pyrogram={pver}"
+            )
     except Exception as e:
         logger.exception(f"SafeDownload recheck failed ({tag}): {e}")
 
@@ -391,12 +493,8 @@ def recheck_clients_ready(tag: str = "manual"):
 def _integration_boot_log():
     try:
         details = []
-
-        # 1) stream_and_save callable?
         ok_handler = callable(globals().get("stream_and_save"))
         details.append(f"handler={'OK' if ok_handler else 'MISSING'}")
-
-        # 2) multi_clients status (Pyrogram pool)
         try:
             from Thunder.bot import multi_clients
             mc_count = 0
@@ -410,14 +508,12 @@ def _integration_boot_log():
             mc_ok = False
             details.append(f"clients=ERR:{e.__class__.__name__}")
 
-        # 3) Pyrogram version (just for visibility)
         try:
             import pyrogram
             details.append(f"pyrogram={getattr(pyrogram, '__version__', 'unknown')}")
         except Exception:
             details.append("pyrogram=unknown")
 
-        # 4) Final log line
         if ok_handler and mc_ok:
             logger.info("✅ SafeDownload ready: " + " | ".join(details))
         else:
@@ -437,7 +533,6 @@ if _os.getenv("SAFE_DL_BOOT_LOG", "true").lower() == "true":
     except Exception as e:
         logger.warning(f"⚠️ SafeDownload initial log failed: {e}")
 
-    # helper recheck
     def _delayed_check(tag, delay):
         def _check():
             try:
@@ -448,20 +543,19 @@ if _os.getenv("SAFE_DL_BOOT_LOG", "true").lower() == "true":
         t.daemon = True
         t.start()
 
-    # 1️⃣ schedule one short and one long check
+    # short + long checks
     _delayed_check("fallback-10s", 10)
     _delayed_check("fallback-25s", 25)
 
-    # 2️⃣ polling loop (once-only)
+    # polling loop (once-only)
     def _poll_for_clients():
         deadline = _time.time() + 25
         while _time.time() < deadline:
             try:
                 from Thunder.bot import multi_clients
-                if isinstance(multi_clients, (dict, list, tuple)):
-                    if len(multi_clients) > 0:
-                        recheck_clients_ready("poll-ready")
-                        return
+                if isinstance(multi_clients, (dict, list, tuple)) and len(multi_clients) > 0:
+                    recheck_clients_ready("poll-ready")
+                    return
             except Exception:
                 pass
             _time.sleep(2)
