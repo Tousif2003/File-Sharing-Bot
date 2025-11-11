@@ -18,8 +18,15 @@ from Thunder.utils.logger import logger
 from Thunder.utils.render_template import render_page
 from Thunder.utils.time_format import get_readable_time
 
-# safe download ke functions 
-from Thunder.utils.safe_download import stream_and_save, get_state_snapshot
+# ✅ Safe Download functions & hybrid-lock support
+from Thunder.utils.safe_download import (
+    stream_and_save,
+    get_state_snapshot,
+    set_hybrid_lock,        # new
+    clear_hybrid_lock,      # new
+    is_hybrid_locked,       # new
+    hybrid_lock_map         # optional debug map
+)
 from Thunder.utils import safe_download as _sd
 
 routes = web.RouteTableDef()
@@ -284,20 +291,28 @@ async def media_delivery(request: web.Request):
             else:
                 raise
 
-    # --- Hybrid lock (unique file-id) store ---
+    # --- Hybrid lock (unique file-id) store (in-proc, per-app) ---
     import time
     _HYBRID_LOCKS = getattr(media_delivery, "_HYBRID_LOCKS", {})
-    media_delivery._HYBRID_LOCKS = _HYBRID_LOCKS  # static store across calls
+    media_delivery._HYBRID_LOCKS = _HYBRID_LOCKS  # persist across calls in same process
 
-    def _hybrid_lock_set(uid: str, ttl: int):
+    def _hybrid_lock_set(uid: str, ttl: int, file_name: str = ""):
+        """
+        Set lock for this unique_id only. Logs include filename & TTL hours.
+        """
         now = time.time()
         _HYBRID_LOCKS[uid] = now + ttl
-        # cleanup (every ~64 inserts)
+        # periodic cleanup
         if len(_HYBRID_LOCKS) % 64 == 0:
             expired = [k for k, v in _HYBRID_LOCKS.items() if v <= now]
             for k in expired:
                 _HYBRID_LOCKS.pop(k, None)
-        logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {ttl//3600}h")
+        hrs = round(ttl / 3600, 2)
+        fn = (file_name or "").strip()
+        if fn:
+            logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hrs}h | file='{fn}'")
+        else:
+            logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hrs}h")
 
     def _hybrid_lock_active(uid: str) -> bool:
         exp = _HYBRID_LOCKS.get(uid)
@@ -319,40 +334,47 @@ async def media_delivery(request: web.Request):
         USE_ALT_CLIENT             = os.getenv("SAFE_SWITCH_USE_ALT_CLIENT", "true").lower() == "true"
         STALL_DEADLINE_SEC         = int(os.getenv("STALL_DEADLINE_SEC", "15"))
 
-        # ✅ Adaptive chunking
+        # ✅ Adaptive chunking (env-driven)
         AD_CHUNK_NORMAL       = int(os.getenv("CHUNK_SIZE_NORMAL",  str(1 * 1024 * 1024)))  # 1MB
         AD_CHUNK_FALLBACK     = int(os.getenv("CHUNK_SIZE_FALLBACK", str(768 * 1024)))      # 768KB
-        AD_DOWNGRADE_TIMEOUTS = int(os.getenv("DOWNGRADE_TIMEOUTS", "1"))
-        AD_LOW_MBPS           = float(os.getenv("LOW_SPEED_MBPS_THRESHOLD", "2.5"))
-        AD_RECOVER_MBPS       = float(os.getenv("RECOVERY_MBPS_THRESHOLD", "5.5"))
-        AD_GOOD_SEC           = int(os.getenv("GOOD_SECONDS_TO_UPSCALE", "6"))
+        AD_DOWNGRADE_TIMEOUTS = int(os.getenv("DOWNGRADE_TIMEOUTS", "1"))                   # timeouts to drop size
+        AD_LOW_MBPS           = float(os.getenv("LOW_SPEED_MBPS_THRESHOLD", "2.5"))         # streak reset only
+        AD_RECOVER_MBPS       = float(os.getenv("RECOVERY_MBPS_THRESHOLD", "5.5"))          # upscale threshold
+        AD_GOOD_SEC           = int(os.getenv("GOOD_SECONDS_TO_UPSCALE", "6"))              # seconds to upscale
 
-        HYBRID_LOCK_TTL = int(os.getenv("HYBRID_LOCK_TTL", "14400"))  # 4h default
+        # 🔒 Hybrid lock TTL (4 hours default)
+        HYBRID_LOCK_TTL = int(os.getenv("HYBRID_LOCK_TTL", "14400"))
 
         def _ad_log(msg: str):
             logger.info(f"⚙️ [Adaptive] {msg}")
 
+        # Choose least-loaded client
         client_id, streamer = select_optimal_client()
         work_loads[client_id] += 1
 
         try:
+            # Warm connection (best-effort)
             try:
                 await streamer.get_me()
             except Exception:
                 pass
 
+            # File info + hash check
             file_info = await streamer.get_file_info(message_id)
             if not file_info.get("unique_id"):
                 raise FileNotFound("File unique ID not found.")
             if file_info["unique_id"][:SECURE_HASH_LENGTH] != secure_hash:
                 raise InvalidHash("Hash mismatch with file unique ID.")
 
-            file_uid = str(file_info["unique_id"])  # for hybrid lock
+            file_uid = str(file_info["unique_id"])      # for hybrid lock (per-file)
             file_size = int(file_info.get("file_size") or 0)
             if file_size <= 0:
                 raise FileNotFound("File size unavailable or zero.")
 
-            # ✅ Hybrid lock: if already active, route directly to SafeDownload
+            filename  = (file_info.get("file_name") or f"file_{secrets.token_hex(4)}").strip()
+            encoded_filename = quote(filename)
+
+            # ✅ Hybrid lock: if already active for THIS uid, force safe download path now
             if _hybrid_lock_active(file_uid):
                 logger.info(f"🔒 Hybrid lock active for {file_uid[:10]}... → forcing SafeDownload path.")
                 try:
@@ -361,30 +383,42 @@ async def media_delivery(request: web.Request):
                         or request.query.get("chat_id")
                         or os.getenv("BIN_CHANNEL")
                     )
+                    if not chat_id:
+                        raise FileNotFound("Chat ID unavailable for fallback.")
                     chat_id = int(str(chat_id).replace("@", "").strip())
+
                     keys = list(multi_clients.keys())
-                    cur_ix = keys.index(client_id) if client_id in keys else 0
+                    try:
+                        cur_ix = keys.index(client_id)
+                    except ValueError:
+                        cur_ix = 0
                     alt_id = keys[(cur_ix + 1) % len(keys)] if (USE_ALT_CLIENT and len(keys) > 1) else client_id
                     hybrid_cli = multi_clients[alt_id]
+
                     await ensure_client_started(hybrid_cli)
                     msg = await hybrid_cli.get_messages(chat_id, int(message_id))
-                    if msg:
-                        _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL)
-                        return await stream_and_save(msg, request)
+                    if not msg:
+                        raise FileNotFound(f"Failed to fetch message {message_id} from chat {chat_id}")
+
+                    # lock ko refresh karo (same uid) taaki pure download me hybrid hi rahe
+                    _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL, filename)
+                    return await stream_and_save(msg, request)
+
                 except Exception as e:
                     logger.warning(f"Hybrid lock fallback failed: {e}")
+                    # fallthrough to normal streaming
 
-            # ===== Range logic =====
+            # ===== Resume logic (Range parsing) =====
             range_header = request.headers.get("Range", "")
             start, end = parse_range_header(range_header, file_size)
             content_length = end - start + 1
+
+            # Agar full file hi maangi gayi hai to 200 bhejo (Content-Range mat bhejna)
             full_range = (start == 0 and end == file_size - 1)
             if full_range:
                 range_header = ""
 
-            filename  = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
-            encoded_filename = quote(filename)
-
+            # Force download + resume-friendly headers
             status = 200 if not range_header else 206
             headers = {
                 "Content-Type": "application/octet-stream",
@@ -400,13 +434,15 @@ async def media_delivery(request: web.Request):
             if status == 206:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
+            # HEAD -> headers only
             if request.method == "HEAD":
                 return web.Response(status=status, headers=headers)
 
+            # Prepare response
             response = web.StreamResponse(status=status, headers=headers)
             await response.prepare(request)
 
-            # Streaming + adaptive
+            # Streaming + adaptive state
             _ad_cur_chunk   = AD_CHUNK_NORMAL
             _ad_timeouts    = 0
             _ad_good_streak = 0
@@ -416,18 +452,24 @@ async def media_delivery(request: web.Request):
             bytes_sent = 0
             bytes_to_skip = start % CLIENT_CHUNK_SIZE
             dc_retries = 0
+
+            # Speed monitor (for hybrid switch)
             last_check = time.time()
             last_bytes = 0
             slow_count = 0
+
+            # 🛡️ stall watchdog (update on every progress)
             last_progress_ts = time.time()
 
             while True:
                 try:
+                    # IMPORTANT: start + bytes_sent, limit = remaining in requested window
                     async for chunk in streamer.stream_file(
                         message_id,
                         offset=start + bytes_sent,
                         limit=content_length - bytes_sent
                     ):
+                        # Align to our client chunk boundary if needed
                         if bytes_to_skip:
                             if len(chunk) <= bytes_to_skip:
                                 bytes_to_skip -= len(chunk)
@@ -435,38 +477,59 @@ async def media_delivery(request: web.Request):
                             chunk = chunk[bytes_to_skip:]
                             bytes_to_skip = 0
 
+                        # Do not exceed requested range
                         remaining = content_length - bytes_sent
                         if len(chunk) > remaining:
                             chunk = chunk[:remaining]
+
+                        # progress happened
                         if chunk:
                             last_progress_ts = time.time()
 
                         write_buffer.extend(chunk)
+                        # flush on adaptive chunk size
                         if len(write_buffer) >= CLIENT_CHUNK_SIZE:
-                            await response.write(write_buffer)
-                            await response.drain()
-                            write_buffer = bytearray()
+                            try:
+                                await response.write(write_buffer)
+                                await response.drain()
+                                write_buffer = bytearray()
+
+                                # Periodic yield for smoother IO
+                                if bytes_sent and bytes_sent % (ASYNC_YIELD_INTERVAL_MB * CLIENT_CHUNK_SIZE) == 0:
+                                    await asyncio.sleep(0)
+                            except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                                logger.warning("⚠️ Client disconnected mid-stream.")
+                                break
+                            except BufferError:
+                                logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
+                                write_buffer = bytearray()
 
                         bytes_sent += len(chunk)
+
+                        # ---- Speed monitor (MB/s) + adaptive + hybrid trigger ----
                         now = time.time()
                         if now - last_check >= 1:
                             elapsed = now - last_check
                             downloaded = bytes_sent - last_bytes
                             speed_MBps = (downloaded / (1024 * 1024)) / max(0.001, elapsed)
 
-                            # adaptive
+                            # Adaptive: good/low speed tracking
                             if speed_MBps < AD_LOW_MBPS:
                                 _ad_good_streak = 0
                             else:
                                 _ad_good_streak += 1
+
+                            # If currently on fallback & speed stable fast → restore normal chunk
                             if (_ad_cur_chunk == AD_CHUNK_FALLBACK
                                 and _ad_good_streak >= AD_GOOD_SEC
                                 and speed_MBps >= AD_RECOVER_MBPS):
                                 _ad_cur_chunk = AD_CHUNK_NORMAL
                                 CLIENT_CHUNK_SIZE = _ad_cur_chunk
-                                _ad_log(f"Chunk size restored → {AD_CHUNK_NORMAL//1024}KB (stable {speed_MBps:.2f} MB/s)")
+                                _ad_log(f"Chunk size restored → {AD_CHUNK_NORMAL // 1024} KB "
+                                        f"(stable {speed_MBps:.2f} MB/s for {AD_GOOD_SEC}s)")
                                 _ad_good_streak = 0
 
+                            # Hybrid auto-switch windowing
                             if speed_MBps < SAFE_SWITCH_THRESHOLD_MBPS:
                                 slow_count += 1
                             else:
@@ -474,57 +537,118 @@ async def media_delivery(request: web.Request):
 
                             logger.info(f"⚙️ Stream speed: {speed_MBps:.2f} MB/s | SlowCount={slow_count}")
 
-                            # 🔁 Hybrid switch trigger (pre-send)
-                            if slow_count >= SAFE_SWITCH_DURATION_SEC and bytes_sent == 0:
-                                logger.warning(f"⚡ Speed too low ({speed_MBps:.2f}) → switching to hybrid.")
+                            # ⚠️ Hybrid only if nothing has been sent yet (to avoid partial/corrupt file)
+                            if slow_count >= SAFE_SWITCH_DURATION_SEC and bytes_sent == 0 and len(write_buffer) == 0:
+                                logger.warning(
+                                    f"⚡ Speed too low ({speed_MBps:.2f} MB/s) — switching to SafeDownload hybrid mode (pre-send)."
+                                )
                                 try:
                                     chat_id = (
                                         getattr(StreamBot, "chat_id", None)
                                         or request.query.get("chat_id")
                                         or os.getenv("BIN_CHANNEL")
                                     )
+                                    if not chat_id:
+                                        raise FileNotFound("Chat ID unavailable for fallback.")
                                     chat_id = int(str(chat_id).replace("@", "").strip())
+
+                                    # Prefer alternate client for hybrid if available (dict-safe rotation)
                                     keys = list(multi_clients.keys())
-                                    cur_ix = keys.index(client_id) if client_id in keys else 0
+                                    try:
+                                        cur_ix = keys.index(client_id)
+                                    except ValueError:
+                                        cur_ix = 0
                                     alt_id = keys[(cur_ix + 1) % len(keys)] if (USE_ALT_CLIENT and len(keys) > 1) else client_id
                                     hybrid_cli = multi_clients[alt_id]
+                                    if alt_id != client_id:
+                                        logger.info(f"🔁 Hybrid using alternate client ID {alt_id}.")
+
                                     await ensure_client_started(hybrid_cli)
+
                                     msg = await hybrid_cli.get_messages(chat_id, int(message_id))
-                                    if msg:
-                                        _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL)
-                                        return await stream_and_save(msg, request)
+                                    if not msg:
+                                        raise FileNotFound(f"Failed to fetch message {message_id} from chat {chat_id}")
+
+                                    # set lock for THIS file only (with filename in log)
+                                    _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL, filename)
+                                    return await stream_and_save(msg, request)
+
                                 except Exception as e:
-                                    logger.error(f"Hybrid switch failed: {e}")
+                                    logger.error(f"Hybrid switch failed (continuing normal stream): {e}")
+                                    # continue normal streaming
 
-                            # stall watchdog
+                            # 🛡️ STALL WATCHDOG: no progress for too long → close so client can resume via Range
                             if (now - last_progress_ts) > STALL_DEADLINE_SEC and bytes_sent < content_length:
-                                logger.warning(f"⏳ No progress for {now - last_progress_ts:.1f}s — closing for resume.")
-                                await response.write_eof()
-                                return
+                                logger.warning(
+                                    f"⏳ No progress for {now - last_progress_ts:.1f}s "
+                                    f"(sent {bytes_sent}/{content_length}). Closing to trigger client resume."
+                                )
+                                try:
+                                    if write_buffer:
+                                        await response.write(write_buffer)
+                                        await response.drain()
+                                except Exception:
+                                    pass
+                                try:
+                                    await response.write_eof()
+                                except Exception:
+                                    pass
+                                return  # client will immediately retry with Range
 
-                            last_check, last_bytes = now, bytes_sent
+                            last_check = now
+                            last_bytes = bytes_sent
+
                         if bytes_sent >= content_length:
                             break
-                    break
+
+                    break  # success; leave retry loop
+
                 except Exception as e:
+                    # ✅ Adaptive: downgrade on Telegram TIMEOUTs
                     if "TIMEOUT" in str(e).upper():
                         _ad_timeouts += 1
                         if _ad_timeouts >= AD_DOWNGRADE_TIMEOUTS and _ad_cur_chunk != AD_CHUNK_FALLBACK:
                             _ad_cur_chunk = AD_CHUNK_FALLBACK
                             CLIENT_CHUNK_SIZE = _ad_cur_chunk
-                            _ad_log(f"Chunk size downgraded → {AD_CHUNK_FALLBACK//1024}KB (timeouts hit)")
+                            _ad_log(f"Chunk size downgraded → {AD_CHUNK_FALLBACK // 1024} KB (timeouts hit: {AD_DOWNGRADE_TIMEOUTS})")
                             _ad_timeouts = 0
+                        # small backoff then try again
                         await asyncio.sleep(0.5)
                         continue
-                    raise
 
+                    # DC migration hints
+                    if any(dc in str(e) for dc in ["PHONE_MIGRATE", "NETWORK_MIGRATE", "USER_MIGRATE", "FILE_MIGRATE"]):
+                        dc_retries += 1
+                        if dc_retries > 3:
+                            raise
+                        logger.warning(f"🌐 DC mismatch detected — reconnecting attempt {dc_retries}")
+                        await asyncio.sleep(1.5)
+                        continue
+                    else:
+                        raise
+
+            # Final flush
             if write_buffer:
-                await response.write(write_buffer)
-                await response.drain()
-            await response.write_eof()
+                try:
+                    await response.write(write_buffer)
+                    await response.drain()
+                except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                    logger.warning("⚠️ Client disconnected during final flush.")
 
+            try:
+                await response.write_eof()
+            except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                logger.info("Client closed connection before EOF; ignoring.")
+
+        except (FileNotFound, InvalidHash):
+            raise
+        except Exception as e:
+            error_id = secrets.token_hex(6)
+            logger.error(f"Stream error {error_id}: {e}", exc_info=True)
+            raise web.HTTPInternalServerError(text=f"Streaming error: {error_id}") from e
         finally:
             work_loads[client_id] = max(0, work_loads.get(client_id, 1) - 1)
+
         return response
 
     except (InvalidHash, FileNotFound):
@@ -540,51 +664,119 @@ async def media_delivery(request: web.Request):
 # ============================================================
 
 @routes.get("/force-lock")
-async def force_hybrid_lock(request):
-    """Manually create a hybrid lock for testing."""
-    from Thunder.utils.safe_download import hybrid_lock_map
-    import time, os
+async def force_hybrid_lock(request: web.Request):
+    """
+    Manually create a hybrid lock for testing.
+    Usage:
+      /force-lock?id=<file_unique_id>[&name=OptionalFileName][&ttl=<seconds>]
+    Notes:
+      - If 'name' given, it's shown in logs only (not stored).
+      - TTL uses env HYBRID_LOCK_TTL (default 4h) unless ?ttl is provided.
+    """
+    import os, time
+    from Thunder.utils.logger import logger
 
-    uid = request.query.get("id", "manual_test_lock")
-    ttl = int(os.getenv("HYBRID_LOCK_TTL", "43200"))  # Default 12h
-    hybrid_lock_map[uid] = time.time() + ttl
+    uid  = (request.query.get("id") or "").strip()
+    name = (request.query.get("name") or "").strip()
+    ttl_q = request.query.get("ttl")
+    try:
+        ttl = int(ttl_q) if ttl_q else int(os.getenv("HYBRID_LOCK_TTL", "14400"))  # 4h default
+    except Exception:
+        ttl = 14400
 
-    logger.info(f"🔒 [ForceLock] Manually added lock for {uid[:10]}... ({ttl//3600}h)")
+    if not uid:
+        return web.Response(text="⚠️ Please supply ?id=<file_unique_id>")
 
-    return web.Response(
-        text=f"✅ Forced hybrid lock added for: {uid[:10]}... (expires in {ttl//3600} hours)"
-    )
+    # Prefer helper functions if present, else fallback to map
+    try:
+        from Thunder.utils.safe_download import set_hybrid_lock
+        set_hybrid_lock(uid, ttl)
+        hrs = round(ttl / 3600, 2)
+        if name:
+            logger.info(f"🔒 [ForceLock] Manually added lock for {uid[:10]}... ({hrs}h) | file='{name}'")
+        else:
+            logger.info(f"🔒 [ForceLock] Manually added lock for {uid[:10]}... ({hrs}h)")
+    except Exception:
+        # Fallback: direct map write
+        try:
+            from Thunder.utils.safe_download import hybrid_lock_map
+            hybrid_lock_map[uid] = time.time() + ttl
+            hrs = round(ttl / 3600, 2)
+            if name:
+                logger.info(f"🔒 [ForceLock] Manually added lock for {uid[:10]}... ({hrs}h) | file='{name}'")
+            else:
+                logger.info(f"🔒 [ForceLock] Manually added lock for {uid[:10]}... ({hrs}h)")
+        except Exception as e:
+            return web.Response(text=f"❌ Failed to force-lock: {e}")
+
+    disp = f"{uid[:10]}..."
+    suffix = f" | file='{name}'" if name else ""
+    return web.Response(text=f"✅ Forced hybrid lock added for: {disp} (expires in {round(ttl/3600,2)}h){suffix}")
 
 
 @routes.get("/unlock-lock")
-async def unlock_hybrid_lock(request):
-    """Manually remove a hybrid lock by ID."""
-    from Thunder.utils.safe_download import hybrid_lock_map
+async def unlock_hybrid_lock(request: web.Request):
+    """
+    Manually remove a hybrid lock by UID.
+    Usage:
+      /unlock-lock?id=<file_unique_id>
+    """
+    from Thunder.utils.logger import logger
 
-    uid = request.query.get("id")
+    uid = (request.query.get("id") or "").strip()
     if not uid:
-        return web.Response(text="⚠️ Please specify ?id=<unique_id> to unlock.")
-    if uid in hybrid_lock_map:
-        hybrid_lock_map.pop(uid, None)
+        return web.Response(text="⚠️ Please specify ?id=<file_unique_id> to unlock.")
+
+    # Prefer helper if present
+    try:
+        from Thunder.utils.safe_download import clear_hybrid_lock
+        removed = clear_hybrid_lock(uid)
+    except Exception:
+        # Fallback to map
+        try:
+            import time as _t
+            from Thunder.utils.safe_download import hybrid_lock_map
+            exp = hybrid_lock_map.pop(uid, None)
+            removed = exp is not None and exp > _t.time()
+        except Exception as e:
+            return web.Response(text=f"❌ Failed to unlock: {e}")
+
+    if removed:
         logger.info(f"🔓 [ForceUnlock] Lock removed for {uid[:10]}...")
         return web.Response(text=f"✅ Lock removed for {uid[:10]}...")
     else:
-        return web.Response(text=f"❌ No lock found for {uid[:10]}.")
+        return web.Response(text=f"❌ No active lock found for {uid[:10]}.")
 
 
 @routes.get("/hybrid-locks")
-async def hybrid_locks_debug(request):
-    """View currently active hybrid locks and expiry info."""
-    from Thunder.utils.safe_download import hybrid_lock_map
+async def hybrid_locks_debug(request: web.Request):
+    """
+    View currently active hybrid locks and expiry info.
+    Usage:
+      /hybrid-locks
+    """
     import time
+    from Thunder.utils.logger import logger
+
+    # Always fallback-safe
+    try:
+        from Thunder.utils.safe_download import hybrid_lock_map
+    except Exception as e:
+        return web.Response(text=f"❌ Cannot access lock map: {e}")
 
     if not hybrid_lock_map:
         return web.Response(text="❌ No active hybrid locks.")
 
-    data = []
-    for uid, exp in hybrid_lock_map.items():
-        left = max(0, round((exp - time.time()) / 3600, 2))
-        data.append(f"{uid[:10]}... → expires in {left}h")
+    now = time.time()
+    rows = []
+    for uid, exp in list(hybrid_lock_map.items()):
+        left_h = max(0.0, round((exp - now) / 3600, 2))
+        rows.append(f"{uid[:10]}... → expires in {left_h}h")
 
-    logger.info("🧠 Hybrid lock status route called successfully")
-    return web.Response(text="\n".join(data))
+    logger.info("🧠 Hybrid lock status route called")
+    return web.Response(text="\n".join(rows))
+
+
+
+
+
