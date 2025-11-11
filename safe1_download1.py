@@ -43,32 +43,39 @@ WRITE_TIMEOUT_SEC = int(os.getenv("WRITE_TIMEOUT_SEC", "15"))
 EOF_TIMEOUT_SEC   = int(os.getenv("EOF_TIMEOUT_SEC", "8"))
 
 
-# Default TTL = 12 hours (configurable via ENV)
+# --- Hybrid Lock (per-file UID) ---------------------------------------------
+# Default TTL = 4 hours (configurable via ENV)
 HYBRID_LOCK_TTL = int(os.getenv("HYBRID_LOCK_TTL", "14400"))  # 4h default
 hybrid_lock_map: Dict[str, float] = {}  # {file_unique_id: expiry_epoch}
 
 def _hybrid_lock_cleanup() -> None:
-    """Remove expired locks."""
+    """Remove expired locks from the in-process map."""
     now = time.time()
     expired = [k for k, v in hybrid_lock_map.items() if v <= now]
     for k in expired:
         hybrid_lock_map.pop(k, None)
 
-def set_hybrid_lock(uid: str, ttl: int | None = None) -> None:
-    """Activate hybrid mode lock for a file UID."""
+def set_hybrid_lock(uid: str, ttl: int | None = None, file_name: str = "") -> None:
+    """
+    Activate hybrid mode lock for a file UID.
+    Logs filename (if provided) and TTL in hours.
+    """
     if not uid:
         return
     _hybrid_lock_cleanup()
-    expiry = time.time() + int(ttl or HYBRID_LOCK_TTL)
-    hybrid_lock_map[uid] = expiry
-    hours = (int(ttl or HYBRID_LOCK_TTL)) // 3600
+    ttl_val = int(ttl or HYBRID_LOCK_TTL)
+    hybrid_lock_map[uid] = time.time() + ttl_val
+    hours = round(ttl_val / 3600, 2)  # more accurate (matches stream_routes)
     try:
-        logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hours}h")
+        if file_name:
+            logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hours}h | file='{file_name}'")
+        else:
+            logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hours}h")
     except Exception:
         pass
 
 def clear_hybrid_lock(uid: str) -> bool:
-    """Remove hybrid mode lock manually."""
+    """Remove hybrid mode lock manually. Returns True if it existed."""
     _hybrid_lock_cleanup()
     existed = uid in hybrid_lock_map
     hybrid_lock_map.pop(uid, None)
@@ -80,7 +87,7 @@ def clear_hybrid_lock(uid: str) -> bool:
     return existed
 
 def is_hybrid_locked(uid: str) -> bool:
-    """Return True if UID currently locked."""
+    """Return True if UID currently locked (and not expired)."""
     _hybrid_lock_cleanup()
     exp = hybrid_lock_map.get(uid)
     return bool(exp and exp > time.time())
