@@ -1,6 +1,5 @@
 # Thunder/server/stream_routes.py
 
-import os
 import re
 import secrets
 import time
@@ -173,34 +172,22 @@ async def media_preview(request: web.Request):
 
 @routes.get(r"/{path:.+}", allow_head=True)
 async def media_delivery(request: web.Request):
-    # Config from env
-    STALL_DEADLINE_SEC = int(os.getenv("STALL_DEADLINE_SEC", "15"))
-    SAFE_RETRY_COUNT = int(os.getenv("SAFE_RETRY_COUNT", "2"))       # how many client-switch retries on stall
-    RETRY_BACKOFF_SECS = float(os.getenv("RETRY_BACKOFF_SECS", "1")) # base backoff (exponential)
-    CLIENT_CHUNK_SIZE = int(os.getenv("CLIENT_CHUNK_SIZE", str(1 * 1024 * 1024)))  # 1MB default
-
     try:
         path = request.match_info["path"]
         message_id, secure_hash = parse_media_request(path, request.query)
 
-        # We'll pick clients lazily and may switch on stall
-        tried_clients = set()
-        last_client_id = None
-        response = None
-
-        # Choose initial client
+        # ✅ Choose best Telegram client dynamically
         client_id, streamer = select_optimal_client()
         work_loads[client_id] += 1
-        last_client_id = client_id
 
         try:
-            # Warm connection
+            # 🔥 Warm Telegram connection (avoid cold-start lag)
             try:
                 await streamer.get_me()
             except Exception:
                 pass
 
-            # Get file info (use current streamer)
+            # 🎯 Fetch file info
             file_info = await streamer.get_file_info(message_id)
             if not file_info.get("unique_id"):
                 raise FileNotFound("File unique ID not found.")
@@ -211,7 +198,7 @@ async def media_delivery(request: web.Request):
             if not file_size:
                 raise FileNotFound("File size unavailable or zero.")
 
-            # Range parsing
+            # 🎯 Handle Range header
             range_header = request.headers.get("Range", "")
             start, end = parse_range_header(range_header, file_size)
             content_length = end - start + 1
@@ -220,8 +207,9 @@ async def media_delivery(request: web.Request):
             filename = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
             encoded_filename = quote(filename)
 
+            # ✅ Streaming headers (force download)
             headers = {
-                "Content-Type": "application/octet-stream",
+                "Content-Type": "application/octet-stream",  # always binary
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Accept-Ranges": "bytes",
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
@@ -235,206 +223,161 @@ async def media_delivery(request: web.Request):
             if not full_range:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-            # HEAD support
+            # ✅ For HEAD request (metadata only)
+            # ⚠️ Tumhare original jaisa hi: yaha bhi workload -- ho raha hai
             if request.method == "HEAD":
                 work_loads[client_id] -= 1
                 return web.Response(status=206 if not full_range else 200, headers=headers)
 
-            # Prepare response
+            # ✅ Prepare streaming response
             response = web.StreamResponse(status=206 if not full_range else 200, headers=headers)
             await response.prepare(request)
 
+            # ⚙️ Chunk + buffering setup (original)
+            CLIENT_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
+            write_buffer = bytearray()
             bytes_sent = 0
             bytes_to_skip = start % CLIENT_CHUNK_SIZE
-            write_buffer = bytearray()
 
-            # We'll attempt streaming, and on stall we'll try SAFE_RETRY_COUNT times to switch client and resume.
-            retries_left = SAFE_RETRY_COUNT
-            current_offset = start  # absolute file offset where next read should begin
+            # ⏱ 95% ke baad stall + retry settings
+            STALL_SECONDS = 5.0        # 5 sec tak progress nahi -> stall
+            MAX_STALL_RETRIES = 1      # sirf 1 retry
+            stall_retries = 0
 
+            # 🔁 MAIN streaming + late-stall protection
             while True:
-                # Create iterator for current streamer starting from current_offset
-                try:
-                    stream_iter = streamer.stream_file(message_id, offset=current_offset, limit=content_length - bytes_sent).__aiter__()
-                except Exception as e:
-                    # If streamer can't open the stream, try switching client (if retries left)
-                    logger.warning(f"Failed to open stream on client {client_id}: {e}")
-                    if retries_left <= 0:
-                        raise
-                    # mark this client as tried and switch
-                    tried_clients.add(client_id)
-                    work_loads[client_id] -= 1
-                    # pick a new client (simple loop to find a not-yet-tried client)
-                    new_client = None
-                    for _ in range(max(1, SAFE_RETRY_COUNT + 1)):
-                        new_client_id, new_streamer = select_optimal_client()
-                        if new_client_id not in tried_clients:
-                            new_client = (new_client_id, new_streamer)
-                            break
-                    if not new_client:
-                        # fallback: wait and retry same client once (exponential backoff)
-                        await asyncio.sleep(RETRY_BACKOFF_SECS * (SAFE_RETRY_COUNT - retries_left + 1))
-                        retries_left -= 1
-                        # re-increment workload for current client before continuing
-                        work_loads[client_id] += 1
-                        continue
-                    client_id, streamer = new_client
-                    work_loads[client_id] += 1
-                    last_client_id = client_id
-                    retries_left -= 1
-                    continue
+                stall_triggered = False
+                last_progress = time.time()
+                main_task = asyncio.current_task()
 
-                stall_happened = False
-                # iterate chunks with per-chunk timeout
-                while True:
+                async def _stall_watcher():
+                    nonlocal stall_triggered
                     try:
-                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=STALL_DEADLINE_SEC)
-                    except asyncio.TimeoutError:
-                        # Stall detected
-                        stall_id = secrets.token_hex(6)
-                        logger.warning(f"Stream stall {stall_id}: no data for {STALL_DEADLINE_SEC}s (message {message_id}, client {client_id})")
-                        stall_happened = True
-                        break
-                    except StopAsyncIteration:
-                        # Normal stream end for this client
-                        break
-                    except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
-                        logger.warning(f"Client {client_id} disconnected mid-stream.")
-                        stall_happened = True
-                        break
-                    except Exception as e:
-                        error_id = secrets.token_hex(6)
-                        logger.error(f"Stream iteration error {error_id}: {e}", exc_info=True)
-                        # escalate as internal error
-                        raise web.HTTPInternalServerError(text=f"Streaming error: {error_id}") from e
+                        while True:
+                            await asyncio.sleep(1)
 
-                    # If chunk arrived, handle skip + trimming
-                    if bytes_to_skip:
-                        if len(chunk) <= bytes_to_skip:
-                            bytes_to_skip -= len(chunk)
-                            current_offset += len(chunk)
-                            continue
-                        chunk = chunk[bytes_to_skip:]
-                        current_offset += bytes_to_skip
-                        bytes_to_skip = 0
+                            if content_length > 0:
+                                progress_ratio = bytes_sent / content_length
+                            else:
+                                progress_ratio = 0.0
 
-                    remaining = content_length - bytes_sent
-                    if len(chunk) > remaining:
-                        chunk = chunk[:remaining]
+                            # ✅ 95% se pehle stall ignore – exactly tumhari demand
+                            if progress_ratio < 0.95:
+                                continue
 
-                    write_buffer.extend(chunk)
-                    bytes_sent += len(chunk)
-                    current_offset += len(chunk)
+                            # 95% ke baad, STALL_SECONDS se jyada no progress
+                            idle = time.time() - last_progress
+                            if idle > STALL_SECONDS:
+                                stall_triggered = True
+                                logger.warning(
+                                    f"Late stall detected for message {message_id}: "
+                                    f"{idle:.1f}s without progress at "
+                                    f"{progress_ratio*100:.1f}% "
+                                    f"({bytes_sent}/{content_length} bytes)"
+                                )
+                                try:
+                                    main_task.cancel()
+                                except Exception:
+                                    pass
+                                return
+                    except asyncio.CancelledError:
+                        return
 
-                    # Write if buffer big enough
-                    if len(write_buffer) >= CLIENT_CHUNK_SIZE:
+                watcher = asyncio.create_task(_stall_watcher())
+
+                try:
+                    # 🚀 Stream from Telegram (tumhara original loop)
+                    async for chunk in streamer.stream_file(
+                        message_id,
+                        offset=start + bytes_sent,
+                        limit=content_length - bytes_sent,
+                    ):
+                        # har chunk pe progress time update
+                        last_progress = time.time()
+
+                        if bytes_to_skip:
+                            if len(chunk) <= bytes_to_skip:
+                                bytes_to_skip -= len(chunk)
+                                continue
+                            chunk = chunk[bytes_to_skip:]
+                            bytes_to_skip = 0
+
+                        remaining = content_length - bytes_sent
+                        if len(chunk) > remaining:
+                            chunk = chunk[:remaining]
+
+                        # ✅ Buffered writing (original)
+                        write_buffer.extend(chunk)
+                        if len(write_buffer) >= CLIENT_CHUNK_SIZE:
+                            try:
+                                await response.write(write_buffer)
+                                await response.drain()
+                                write_buffer = bytearray()
+                                # Slight yield every ~3MB
+                                if bytes_sent % (3 * CLIENT_CHUNK_SIZE) == 0:
+                                    await asyncio.sleep(0)
+                            except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
+                                logger.warning("⚠️ Client disconnected mid-stream.")
+                                return
+                            except BufferError:
+                                logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
+                                write_buffer = bytearray()
+
+                        bytes_sent += len(chunk)
+                        if bytes_sent >= content_length:
+                            break
+
+                except asyncio.CancelledError:
+                    # Cancel ya to stall watcher se aaya, ya client se
+                    if stall_triggered:
+                        stall_retries += 1
+                        logger.warning(
+                            f"Retrying after late stall for {message_id} "
+                            f"({stall_retries}/{MAX_STALL_RETRIES}) at "
+                            f"{bytes_sent}/{content_length} bytes"
+                        )
+                        if stall_retries > MAX_STALL_RETRIES:
+                            raise web.HTTPInternalServerError(
+                                text="Streaming stalled near completion"
+                            )
+                        # chhota pause, phir same offset se retry
                         try:
-                            await response.write(write_buffer)
-                            await response.drain()
-                            write_buffer = bytearray()
-                            # yield occasionally
-                            if bytes_sent % (3 * CLIENT_CHUNK_SIZE) == 0:
-                                await asyncio.sleep(0)
-                        except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
-                            logger.warning("⚠️ Client disconnected mid-stream during write.")
-                            stall_happened = True
-                            break
-                        except BufferError:
-                            logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
-                            write_buffer = bytearray()
-
-                    # If we've sent all requested bytes, finish
-                    if bytes_sent >= content_length:
-                        break
-
-                # after inner loop
-                if bytes_sent >= content_length:
-                    # done successfully
-                    break
-
-                if stall_happened:
-                    # attempt safe retry with another client if any retries left
-                    tried_clients.add(client_id)
-                    # decrement this client's workload (we'll pick a new one)
-                    work_loads[client_id] -= 1
-
-                    if retries_left <= 0:
-                        logger.warning("No retries left — aborting stream and sending partial data.")
-                        break
-
-                    # find a new client not in tried_clients
-                    new_client = None
-                    # try a few times to pick an untried client (select_optimal_client may adapt)
-                    for _ in range(max(1, SAFE_RETRY_COUNT + 1)):
-                        cand_id, cand_streamer = select_optimal_client()
-                        if cand_id not in tried_clients:
-                            new_client = (cand_id, cand_streamer)
-                            break
-
-                    if not new_client:
-                        # none fresh found, exponential backoff then re-try current selection (may recover)
-                        backoff = RETRY_BACKOFF_SECS * (SAFE_RETRY_COUNT - retries_left + 1)
-                        logger.info(f"No alternate client found; backing off for {backoff}s before retrying same client.")
-                        await asyncio.sleep(backoff)
-                        # re-acquire same client (best-effort)
-                        client_id, streamer = select_optimal_client()
-                        work_loads[client_id] += 1
-                        last_client_id = client_id
-                        retries_left -= 1
+                            await asyncio.sleep(1.0)
+                        except asyncio.CancelledError:
+                            return
+                        # while True ke top pe wapas, naya watcher + naya stream
                         continue
+                    else:
+                        logger.warning(
+                            f"Streaming cancelled (likely client disconnect) "
+                            f"for message {message_id} at {bytes_sent}/{content_length} bytes"
+                        )
+                        return
 
-                    # switch to new client and continue streaming from current_offset
-                    client_id, streamer = new_client
-                    work_loads[client_id] += 1
-                    last_client_id = client_id
-                    logger.info(f"Switched to client {client_id} to resume streaming at offset {current_offset}. Retries left: {retries_left-1}")
-                    retries_left -= 1
-                    # continue outer while to re-create iterator for new streamer
-                    continue
+                finally:
+                    if not watcher.done():
+                        watcher.cancel()
 
-                # if we get here and not stall_happened and not done, it means stream ended normally but bytes_sent < content_length
-                # (partial data) -> attempt retry like above
-                if bytes_sent < content_length:
-                    logger.warning(f"Stream ended early (sent {bytes_sent}/{content_length}). Will attempt retries if available.")
-                    tried_clients.add(client_id)
-                    work_loads[client_id] -= 1
-                    if retries_left <= 0:
-                        break
-                    # try to get alternate client
-                    new_client = None
-                    for _ in range(max(1, SAFE_RETRY_COUNT + 1)):
-                        cand_id, cand_streamer = select_optimal_client()
-                        if cand_id not in tried_clients:
-                            new_client = (cand_id, cand_streamer)
-                            break
-                    if not new_client:
-                        await asyncio.sleep(RETRY_BACKOFF_SECS * (SAFE_RETRY_COUNT - retries_left + 1))
-                        retries_left -= 1
-                        work_loads[client_id] += 1  # re-use same
-                        continue
-                    client_id, streamer = new_client
-                    work_loads[client_id] += 1
-                    last_client_id = client_id
-                    retries_left -= 1
-                    continue
+                # yaha aaye matlab stream normal finish ho gaya (no stall / no cancel)
+                break
 
-            # Final flush of any remaining buffer
+            # ✅ Final flush (tumhara original)
             if write_buffer:
                 try:
                     await response.write(write_buffer)
                     await response.drain()
                 except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
                     logger.warning("⚠️ Client disconnected during final flush.")
+                    return
 
             try:
                 await response.write_eof()
             except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
-                pass
+                logger.warning("⚠️ Client disconnected while finishing response.")
+            except Exception as e:
+                logger.debug(f"Ignored exception on write_eof: {e}")
 
         except (FileNotFound, InvalidHash):
-            raise
-
-        except web.HTTPException:
             raise
 
         except Exception as e:
@@ -443,12 +386,7 @@ async def media_delivery(request: web.Request):
             raise web.HTTPInternalServerError(text=f"Streaming error: {error_id}") from e
 
         finally:
-            # ensure we decrement the last client's workload if still counted
-            try:
-                if last_client_id is not None:
-                    work_loads[last_client_id] -= 1
-            except Exception:
-                logger.exception("Error decrementing workload in finally block.")
+            work_loads[client_id] -= 1
 
         return response
 
@@ -459,3 +397,7 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
+        
+ 
+
+
