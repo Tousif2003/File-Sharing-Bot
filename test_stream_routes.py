@@ -318,7 +318,7 @@ async def media_delivery(request: web.Request):
                                     await asyncio.sleep(0)
                             except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
                                 logger.warning("⚠️ Client disconnected mid-stream.")
-                                return
+                                return response   # 🔥 FIX 1
                             except BufferError:
                                 logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
                                 write_buffer = bytearray()
@@ -344,7 +344,7 @@ async def media_delivery(request: web.Request):
                         try:
                             await asyncio.sleep(1.0)
                         except asyncio.CancelledError:
-                            return
+                            return response   # 🔥 FIX 2
                         # while True ke top pe wapas, naya watcher + naya stream
                         continue
                     else:
@@ -352,7 +352,7 @@ async def media_delivery(request: web.Request):
                             f"Streaming cancelled (likely client disconnect) "
                             f"for message {message_id} at {bytes_sent}/{content_length} bytes"
                         )
-                        return
+                        return response   # 🔥 FIX 3
 
                 finally:
                     if not watcher.done():
@@ -368,7 +368,7 @@ async def media_delivery(request: web.Request):
                     await response.drain()
                 except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
                     logger.warning("⚠️ Client disconnected during final flush.")
-                    return
+                    return response   # 🔥 FIX 4
 
             try:
                 await response.write_eof()
@@ -397,7 +397,4 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
-        
- 
-
-
+                                    
