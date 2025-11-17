@@ -2,6 +2,8 @@
 
 import re
 import secrets
+from collections import defaultdict
+import random
 import time
 from urllib.parse import quote, unquote
 import json
@@ -30,6 +32,14 @@ VALID_HASH_REGEX = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 streamers = {}
 
+FILE_CLIENT_MAP = {}   # 🔥 DC-lock map for per-file stable client
+
+CLIENT_STATS = defaultdict(lambda: {
+    "bytes": 0,
+    "time": 0.0,
+    "errors": 0,
+    "slow_until": 0.0,  # epoch timestamp
+})
 
 def get_streamer(client_id: int) -> ByteStreamer:
     if client_id not in streamers:
@@ -70,12 +80,72 @@ def parse_media_request(path: str, query: dict) -> tuple[int, str]:
 def select_optimal_client() -> tuple[int, ByteStreamer]:
     if not work_loads:
         raise web.HTTPInternalServerError(
-            text=("No available clients to handle the request. "
-                  "Please try again later."))
+            text=("No available clients to handle the request.")
+        )
+
+    # ----------------------------------------
+    # STEP 1: respect MAX_CONCURRENT_PER_CLIENT
+    # ----------------------------------------
+    base_list = [
+        (cid, load) for cid, load in work_loads.items()
+        if load < MAX_CONCURRENT_PER_CLIENT
+    ]
+
+    # Agar sabhi max load par hai, fallback → sabko consider karo
+    if not base_list:
+        base_list = list(work_loads.items())
+
+    # ----------------------------------------
+    # STEP 2: DO NOT filter slow or banned clients
+    # Yeh AUTH_BYTES_INVALID ka main reason tha
+    # ----------------------------------------
+    valid_clients = base_list
+
+    # ----------------------------------------
+    # STEP 3: Smart scoring (speed + fewer errors + low load)
+    # ----------------------------------------
+    scored_clients = {}
+    for cid, load in valid_clients:
+        stats = CLIENT_STATS[cid]
+
+        total_bytes = stats["bytes"]
+        total_time = stats["time"]
+        errors = stats["errors"]
+
+        # avg speed (bytes/sec)
+        if total_time > 0 and total_bytes > 0:
+            avg_speed = total_bytes / total_time
+        else:
+            avg_speed = 0.0
+
+        # score build
+        score = avg_speed
+        score -= errors * 0.3
+        score -= load * 0.1
+
+        scored_clients[cid] = score
+
+    # ----------------------------------------
+    # STEP 4: select highest scored client
+    # ----------------------------------------
+    client_id = max(scored_clients, key=scored_clients.get)
+    return client_id, get_streamer(client_id)
+
+
+def select_client_legacy() -> tuple[int, ByteStreamer]:
+    """
+    Legacy / simple selector – sirf leech ke liye.
+    Bas workload dekh ke least loaded client choose karta hai.
+    """
+    if not work_loads:
+        raise web.HTTPInternalServerError(
+            text="No available clients to handle the request."
+        )
 
     available_clients = [
         (cid, load) for cid, load in work_loads.items()
-        if load < MAX_CONCURRENT_PER_CLIENT]
+        if load < MAX_CONCURRENT_PER_CLIENT
+    ]
 
     if available_clients:
         client_id = min(available_clients, key=lambda x: x[1])[0]
@@ -191,7 +261,8 @@ async def media_delivery(request: web.Request):
                 forced_client_id = cid_val
 
         # 🧠 Check: kya is file ke liye pehle se koi client lock hai?
-        mapped_client_id = FILE_CLIENT_MAP.get(message_id)
+        # ⛔ IMPORTANT: leech mode me mapping use mat karo
+        mapped_client_id = FILE_CLIENT_MAP.get(message_id) if mode != "leech" else None
 
         # ✅ Client choose logic
         if forced_client_id is not None:
@@ -199,16 +270,15 @@ async def media_delivery(request: web.Request):
             client_id = forced_client_id
             streamer = get_streamer(client_id)
 
-        # ⬇️ yaha condition change: mapping sirf jab leech mode NA ho
-        elif mode != "leech" and mapped_client_id is not None and mapped_client_id in work_loads:
-            # isi file ke liye ham hamesha same client use karenge (sirf normal download)
+        elif mapped_client_id is not None and mapped_client_id in work_loads:
+            # isi file ke liye ham hamesha same client use karenge (sirf normal download me)
             client_id = mapped_client_id
             streamer = get_streamer(client_id)
 
         else:
             # pehli baar / mapping missing → selector se choose karo
             if mode == "leech":
-                # 🔁 Leech ke liye – OLD stable selector (multi-client speed)
+                # 🔁 Leech ke liye – OLD stable selector
                 client_id, streamer = select_client_legacy()
             else:
                 # ⚡ Normal download ke liye – NEW speed-aware selector
@@ -238,7 +308,8 @@ async def media_delivery(request: web.Request):
                 raise FileNotFound("File size unavailable or zero.")
 
             # ✅ Ab pata chal gaya: ye client is file ko sahi se access kar sakta hai
-            #    mapping sirf NORMAL download ke liye lock karo, leech ke liye nahi
+            #    isliye mapping lock kar do, taaki next resume / range me bhi wahi client use ho
+            #    ⭐ IMPORTANT: sirf DOWNLOAD ke liye, leech ke liye nahi
             if mode != "leech" and message_id not in FILE_CLIENT_MAP:
                 FILE_CLIENT_MAP[message_id] = client_id
 
@@ -441,4 +512,4 @@ async def media_delivery(request: web.Request):
         error_id = secrets.token_hex(6)
         logger.error(f"Server error {error_id}: {e}", exc_info=True)
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
-                                    
+                            
