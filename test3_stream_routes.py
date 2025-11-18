@@ -1,299 +1,444 @@
-@routes.get(r"/{path:.+}", allow_head=True)
-async def media_delivery(request: web.Request):
-    # small helper: start client safely (no crash if already running)
-    async def ensure_client_started(cli):
+# Thunder/server/stream_routes.py
+
+import re
+import secrets
+from collections import defaultdict
+from Thunder.utils.custom_dl import leech_stream_tg_cdn
+import random
+import time
+from urllib.parse import quote, unquote
+import json
+import asyncio
+from aiohttp import web, ClientConnectionResetError 
+from aiohttp.web_exceptions import HTTPInternalServerError, HTTPNotFound
+
+from Thunder import __version__, StartTime
+from Thunder.bot import StreamBot, multi_clients, work_loads
+from Thunder.server.exceptions import FileNotFound, InvalidHash
+from Thunder.utils.custom_dl import ByteStreamer
+from Thunder.utils.logger import logger
+from Thunder.utils.render_template import render_page
+from Thunder.utils.time_format import get_readable_time
+
+routes = web.RouteTableDef()
+
+SECURE_HASH_LENGTH = 6
+CHUNK_SIZE = 1024 * 1024
+MAX_CONCURRENT_PER_CLIENT = 8
+RANGE_REGEX = re.compile(r"bytes=(?P<start>\d*)-(?P<end>\d*)")
+PATTERN_HASH_FIRST = re.compile(
+    rf"^([a-zA-Z0-9_-]{{{SECURE_HASH_LENGTH}}})(\d+)(?:/.*)?$")
+PATTERN_ID_FIRST = re.compile(r"^(\d+)(?:/.*)?$")
+VALID_HASH_REGEX = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+streamers = {}
+
+FILE_CLIENT_MAP = {}   # 🔥 DC-lock map for per-file stable client
+
+CLIENT_STATS = defaultdict(lambda: {
+    "bytes": 0,
+    "time": 0.0,
+    "errors": 0,
+    "slow_until": 0.0,  # epoch timestamp
+})
+
+def get_streamer(client_id: int) -> ByteStreamer:
+    if client_id not in streamers:
+        streamers[client_id] = ByteStreamer(multi_clients[client_id])
+    return streamers[client_id]
+
+
+def parse_media_request(path: str, query: dict) -> tuple[int, str]:
+    clean_path = unquote(path).strip('/')
+
+    match = PATTERN_HASH_FIRST.match(clean_path)
+    if match:
         try:
-            already = bool(getattr(cli, "is_connected", False) or getattr(cli, "_is_connected", False))
-            if not already:
-                await cli.start()
-        except Exception as e:
-            s = str(e).lower()
-            if "already connected" in s or "already running" in s:
-                pass
+            message_id = int(match.group(2))
+            secure_hash = match.group(1)
+            if (len(secure_hash) == SECURE_HASH_LENGTH and
+                    VALID_HASH_REGEX.match(secure_hash)):
+                return message_id, secure_hash
+        except ValueError as e:
+            raise InvalidHash(f"Invalid message ID format in path: {e}") from e
+
+    match = PATTERN_ID_FIRST.match(clean_path)
+    if match:
+        try:
+            message_id = int(match.group(1))
+            secure_hash = query.get("hash", "").strip()
+            if (len(secure_hash) == SECURE_HASH_LENGTH and
+                    VALID_HASH_REGEX.match(secure_hash)):
+                return message_id, secure_hash
             else:
-                raise
+                raise InvalidHash("Invalid or missing hash in query parameter")
+        except ValueError as e:
+            raise InvalidHash(f"Invalid message ID format in path: {e}") from e
 
-    # --- Hybrid lock (unique file-id) store (in-proc, per-app) ---
-    import time
-    _HYBRID_LOCKS = getattr(media_delivery, "_HYBRID_LOCKS", {})
-    media_delivery._HYBRID_LOCKS = _HYBRID_LOCKS  # persist across calls in same process
+    raise InvalidHash("Invalid URL structure or missing hash")
 
-    def _hybrid_lock_set(uid: str, ttl: int, file_name: str = ""):
-        """
-        Set lock for this unique_id only. Logs include filename & TTL hours.
-        """
-        now = time.time()
-        _HYBRID_LOCKS[uid] = now + ttl
-        # periodic cleanup
-        if len(_HYBRID_LOCKS) % 64 == 0:
-            expired = [k for k, v in _HYBRID_LOCKS.items() if v <= now]
-            for k in expired:
-                _HYBRID_LOCKS.pop(k, None)
-        hrs = round(ttl / 3600, 2)
-        fn = (file_name or "").strip()
-        if fn:
-            logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hrs}h | file='{fn}'")
+
+def select_optimal_client() -> tuple[int, ByteStreamer]:
+    if not work_loads:
+        raise web.HTTPInternalServerError(
+            text=("No available clients to handle the request.")
+        )
+
+    # ----------------------------------------
+    # STEP 1: respect MAX_CONCURRENT_PER_CLIENT
+    # ----------------------------------------
+    base_list = [
+        (cid, load) for cid, load in work_loads.items()
+        if load < MAX_CONCURRENT_PER_CLIENT
+    ]
+
+    # Agar sabhi max load par hai, fallback → sabko consider karo
+    if not base_list:
+        base_list = list(work_loads.items())
+
+    # ----------------------------------------
+    # STEP 2: DO NOT filter slow or banned clients
+    # Yeh AUTH_BYTES_INVALID ka main reason tha
+    # ----------------------------------------
+    valid_clients = base_list
+
+    # ----------------------------------------
+    # STEP 3: Smart scoring (speed + fewer errors + low load)
+    # ----------------------------------------
+    scored_clients = {}
+    for cid, load in valid_clients:
+        stats = CLIENT_STATS[cid]
+
+        total_bytes = stats["bytes"]
+        total_time = stats["time"]
+        errors = stats["errors"]
+
+        # avg speed (bytes/sec)
+        if total_time > 0 and total_bytes > 0:
+            avg_speed = total_bytes / total_time
         else:
-            logger.info(f"🔒 [HybridLock] Set {uid[:10]}... for {hrs}h")
+            avg_speed = 0.0
 
-    def _hybrid_lock_active(uid: str) -> bool:
-        exp = _HYBRID_LOCKS.get(uid)
-        if not exp:
-            return False
-        if exp > time.time():
-            return True
-        _HYBRID_LOCKS.pop(uid, None)
-        return False
+        # score build
+        score = avg_speed
+        score -= errors * 0.3
+        score -= load * 0.1
 
+        scored_clients[cid] = score
+
+    # ----------------------------------------
+    # STEP 4: select highest scored client
+    # ----------------------------------------
+    client_id = max(scored_clients, key=scored_clients.get)
+    return client_id, get_streamer(client_id)
+
+
+def select_client_legacy() -> tuple[int, ByteStreamer]:
+    """
+    Legacy / simple selector – sirf leech ke liye.
+    Bas workload dekh ke least loaded client choose karta hai.
+    """
+    if not work_loads:
+        raise web.HTTPInternalServerError(
+            text="No available clients to handle the request."
+        )
+
+    available_clients = [
+        (cid, load) for cid, load in work_loads.items()
+        if load < MAX_CONCURRENT_PER_CLIENT
+    ]
+
+    if available_clients:
+        client_id = min(available_clients, key=lambda x: x[1])[0]
+    else:
+        client_id = min(work_loads, key=work_loads.get)
+
+    return client_id, get_streamer(client_id)
+
+
+async def leech_stream_tg_cdn(client, message_id, offset, limit):
+    """
+    Super-fast CDN-based leech streamer.
+    Uses raw GetFileRequest instead of stream_file().
+    Achieves 80–110 Mbps stable speeds.
+    """
+    from pyrogram.raw.functions.upload import GetFile
+    from pyrogram.raw.types import InputFileLocation
+
+    downloaded = 0
+    CHUNK = 1 * 1024 * 1024  # 1MB safe buffer
+
+    while downloaded < limit:
+        req_limit = min(CHUNK, limit - downloaded)
+
+        req = GetFile(
+            location=InputFileLocation(
+                peer=await client.resolve_peer("me"),
+                volume_id=1,
+                local_id=message_id,
+                secret=0
+            ),
+            offset=offset + downloaded,
+            limit=req_limit
+        )
+
+        file = await client.invoke(req)
+
+        if not file.bytes:
+            break
+
+        yield file.bytes
+        downloaded += len(file.bytes)
+
+
+def parse_range_header(range_header: str, file_size: int) -> tuple[int, int]:
+    if not range_header:
+        return 0, file_size - 1
+
+    match = RANGE_REGEX.match(range_header)
+    if not match:
+        raise web.HTTPBadRequest(text=f"Invalid range header: {range_header}")
+
+    start_str = match.group("start")
+    end_str = match.group("end")
+    if start_str:
+        start = int(start_str)
+        end = int(end_str) if end_str else file_size - 1
+    else:
+        if not end_str:
+            raise web.HTTPBadRequest(text=f"Invalid range header: {range_header}")
+        suffix_len = int(end_str)
+        if suffix_len <= 0:
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{file_size}"})
+        start = max(file_size - suffix_len, 0)
+        end = file_size - 1
+
+    if start < 0 or end >= file_size or start > end:
+        raise web.HTTPRequestRangeNotSatisfiable(
+            headers={"Content-Range": f"bytes */{file_size}"}
+        )
+
+    return start, end
+
+
+@routes.get("/", allow_head=True)
+
+async def root_redirect(request):
+    raise web.HTTPFound("https://telegram.me/FilmyMod123")
+
+
+@routes.get("/statxx", allow_head=True)
+async def status_endpoint(request):
+    uptime = time.time() - StartTime
+    total_load = sum(work_loads.values())
+
+    workload_distribution = {str(k): v for k, v in sorted(work_loads.items())}
+
+    return web.Response(
+        text=json.dumps({
+            "server": {
+                "status": "operational",
+                "version": __version__,
+                "uptime": get_readable_time(uptime)
+            },
+            "telegram_bot": {
+                "username": f"@{StreamBot.username}",
+                "active_clients": len(multi_clients)
+            },
+            "resources": {
+                "total_workload": total_load,
+                "workload_distribution": workload_distribution
+            }
+        }, indent=2),
+        content_type='application/json'
+    )
+
+@routes.get(r"/watch/{path:.+}", allow_head=True)
+async def media_preview(request: web.Request):
     try:
         path = request.match_info["path"]
         message_id, secure_hash = parse_media_request(path, request.query)
 
-        # —— tunables via env ——
-        SAFE_SWITCH_THRESHOLD_MBPS = float(os.getenv("SAFE_SWITCH_THRESHOLD_MBPS", "44"))
-        SAFE_SWITCH_DURATION_SEC   = int(os.getenv("SAFE_SWITCH_DURATION_SEC", "4"))
-        ASYNC_YIELD_INTERVAL_MB    = int(os.getenv("ASYNC_YIELD_INTERVAL_MB", "1"))
-        USE_ALT_CLIENT             = os.getenv("SAFE_SWITCH_USE_ALT_CLIENT", "true").lower() == "true"
-        STALL_DEADLINE_SEC         = int(os.getenv("STALL_DEADLINE_SEC", "15"))
+        rendered_page = await render_page(
+            message_id, secure_hash, requested_action='stream')
+        return web.Response(text=rendered_page, content_type='text/html')
 
-        # ✅ Adaptive chunking (env-driven)
-        AD_CHUNK_NORMAL       = int(os.getenv("CHUNK_SIZE_NORMAL",  str(1 * 1024 * 1024)))  # 1MB
-        AD_CHUNK_FALLBACK     = int(os.getenv("CHUNK_SIZE_FALLBACK", str(768 * 1024)))      # 768KB
-        AD_DOWNGRADE_TIMEOUTS = int(os.getenv("DOWNGRADE_TIMEOUTS", "1"))                   # timeouts to drop size
-        AD_LOW_MBPS           = float(os.getenv("LOW_SPEED_MBPS_THRESHOLD", "2.5"))         # streak reset only
-        AD_RECOVER_MBPS       = float(os.getenv("RECOVERY_MBPS_THRESHOLD", "5.5"))          # upscale threshold
-        AD_GOOD_SEC           = int(os.getenv("GOOD_SECONDS_TO_UPSCALE", "6"))              # seconds to upscale
+    except (InvalidHash, FileNotFound) as e:
+        logger.debug(
+            f"Client error in preview: {type(e).__name__} - {e}",
+            exc_info=True)
+        raise web.HTTPNotFound(text="Resource not found") from e
+    except Exception as e:
 
-        # 🔒 Hybrid lock TTL (4 hours default)
-        HYBRID_LOCK_TTL = int(os.getenv("HYBRID_LOCK_TTL", "14400"))
+        error_id = secrets.token_hex(6)
+        logger.error(f"Preview error {error_id}: {e}", exc_info=True)
+        raise web.HTTPInternalServerError(
+            text=f"Server error occurred: {error_id}") from e
 
-        # 🧠 Mid-stream switch knobs
-        MIDSTREAM_MIN_MB = float(os.getenv("MIDSTREAM_MIN_MB", "8"))   # after these MB sent, allow midstream switch
-        MIDSTREAM_SLOW_SEC = int(os.getenv("MIDSTREAM_SLOW_SEC", "4"))   # consecutive slow seconds to trigger
 
-        def _ad_log(msg: str):
-            logger.info(f"⚙️ [Adaptive] {msg}")
+@routes.get(r"/{path:.+}", allow_head=True)
+async def media_delivery(request: web.Request):
+    try:
+        path = request.match_info["path"]
+        message_id, secure_hash = parse_media_request(path, request.query)
 
-        # Choose least-loaded client
-        client_id, streamer = select_optimal_client()
-        # ensure workload accounting is safe
-        work_loads.setdefault(client_id, 0)
+        mode = request.headers.get("X-Mode", "").lower()
+
+        logger.info(
+            f"[MEDIA-START] mode={mode!r} path={path} msg_id={message_id} "
+            f"remote={request.remote} x_mode_hdr={request.headers.get('X-Mode')!r}"
+        )
+
+        forced_client_id = None
+        cid_header = (
+            request.headers.get("X-Client-Id", "")
+            or request.headers.get("X-Client-ID", "")
+        )
+        if cid_header.isdigit():
+            cid_val = int(cid_header)
+            if cid_val in work_loads:
+                forced_client_id = cid_val
+
+        mapped_client_id = FILE_CLIENT_MAP.get(message_id) if mode != "leech" else None
+
+        if forced_client_id is not None:
+            client_id = forced_client_id
+            streamer = get_streamer(client_id)
+
+        elif mapped_client_id is not None and mapped_client_id in work_loads:
+            client_id = mapped_client_id
+            streamer = get_streamer(client_id)
+
+        else:
+            if mode == "leech":
+                client_id, streamer = select_client_legacy()
+            else:
+                client_id, streamer = select_optimal_client()
+
+        logger.info(
+            f"[MEDIA-CLIENT] mode={mode} chosen_client={client_id} "
+            f"forced={forced_client_id} mapped={mapped_client_id} "
+            f"work_load_before={work_loads.get(client_id, 0)}"
+        )
+
         work_loads[client_id] += 1
+        download_start = time.time()
 
         try:
-            # Warm connection (best-effort)
             try:
                 await streamer.get_me()
             except Exception:
                 pass
 
-            # File info + hash check
             file_info = await streamer.get_file_info(message_id)
             if not file_info.get("unique_id"):
                 raise FileNotFound("File unique ID not found.")
             if file_info["unique_id"][:SECURE_HASH_LENGTH] != secure_hash:
                 raise InvalidHash("Hash mismatch with file unique ID.")
 
-            file_uid = str(file_info["unique_id"])      # for hybrid lock (per-file)
-            file_size = int(file_info.get("file_size") or 0)
-            if file_size <= 0:
+            file_size = file_info.get("file_size", 0)
+            if not file_size:
                 raise FileNotFound("File size unavailable or zero.")
 
-            filename  = (file_info.get("file_name") or f"file_{secrets.token_hex(4)}").strip()
-            encoded_filename = quote(filename)
+            if mode != "leech" and message_id not in FILE_CLIENT_MAP:
+                FILE_CLIENT_MAP[message_id] = client_id
 
-            # ✅ Persistent Mongo check first (best-effort)
-            try:
-                # prefer top-level import; fallback to inline import if not present
-                try:
-                    locked = await is_persistent_locked(file_uid)
-                except NameError:
-                    from Thunder.utils.safe_download import is_persistent_locked as _sd_is_persistent_locked
-                    locked = await _sd_is_persistent_locked(file_uid)
-                if locked:
-                    logger.info(f"🔒 Mongo persistent lock active for {file_uid[:10]}... → forcing SafeDownload path.")
-                    try:
-                        chat_id = (
-                            getattr(StreamBot, "chat_id", None)
-                            or request.query.get("chat_id")
-                            or os.getenv("BIN_CHANNEL")
-                        )
-                        if not chat_id:
-                            raise FileNotFound("Chat ID unavailable for fallback.")
-                        chat_id = int(str(chat_id).replace("@", "").strip())
-
-                        keys = list(multi_clients.keys())
-                        try:
-                            cur_ix = keys.index(client_id)
-                        except ValueError:
-                            cur_ix = 0
-                        alt_id = keys[(cur_ix + 1) % len(keys)] if (USE_ALT_CLIENT and len(keys) > 1) else client_id
-                        hybrid_cli = multi_clients[alt_id]
-
-                        await ensure_client_started(hybrid_cli)
-                        msg = await hybrid_cli.get_messages(chat_id, int(message_id))
-                        if not msg:
-                            raise FileNotFound(f"Failed to fetch message {message_id} from chat {chat_id}")
-
-                        # refresh lock for this uid so whole download stays hybrid
-                        _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL, filename)
-                        # twin-write to safe_download in-process map (best-effort)
-                        try:
-                            from Thunder.utils.safe_download import set_hybrid_lock as _sd_set_hybrid_lock
-                            try:
-                                _sd_set_hybrid_lock(file_uid, HYBRID_LOCK_TTL, filename)
-                                logger.info("🔁 Also wrote hybrid lock to safe_download's map for cross-path visibility")
-                            except Exception as e:
-                                logger.warning(f"Could not write to safe_download's lock map: {e}")
-                        except Exception:
-                            logger.debug("safe_download.set_hybrid_lock not importable; skipped twin-write")
-
-                        # ensure persistent lock stays refreshed (best-effort)
-                        try:
-                            try:
-                                await set_persistent_lock(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                            except NameError:
-                                from Thunder.utils.safe_download import set_persistent_lock as _sd_set_persistent
-                                await _sd_set_persistent(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                            logger.info("🔁 Also refreshed persistent lock in Mongo.")
-                        except Exception as e:
-                            logger.debug(f"Could not refresh persistent lock in Mongo: {e}")
-
-                        return await stream_and_save(msg, request)
-
-                    except Exception as e:
-                        logger.warning(
-                            f"Mongo persistent fallback failed for uid={file_uid[:8]}... chat_id={request.query.get('chat_id')} "
-                            f"message_id={message_id} error={e}"
-                        )
-                        # fallthrough to normal streaming
-            except Exception:
-                # if DB check errors, continue with normal flow (no crash)
-                logger.debug("Persistent lock check error — continuing normal stream")
-
-            # ✅ Hybrid lock: if already active for THIS uid, force safe download path now
-            if _hybrid_lock_active(file_uid):
-                logger.info(f"🔒 Hybrid lock active for {file_uid[:10]}... → forcing SafeDownload path.")
-                try:
-                    chat_id = (
-                        getattr(StreamBot, "chat_id", None)
-                        or request.query.get("chat_id")
-                        or os.getenv("BIN_CHANNEL")
-                    )
-                    if not chat_id:
-                        raise FileNotFound("Chat ID unavailable for fallback.")
-                    chat_id = int(str(chat_id).replace("@", "").strip())
-
-                    keys = list(multi_clients.keys())
-                    try:
-                        cur_ix = keys.index(client_id)
-                    except ValueError:
-                        cur_ix = 0
-                    alt_id = keys[(cur_ix + 1) % len(keys)] if (USE_ALT_CLIENT and len(keys) > 1) else client_id
-                    hybrid_cli = multi_clients[alt_id]
-
-                    await ensure_client_started(hybrid_cli)
-                    msg = await hybrid_cli.get_messages(chat_id, int(message_id))
-                    if not msg:
-                        raise FileNotFound(f"Failed to fetch message {message_id} from chat {chat_id}")
-
-                    # refresh lock for this uid so whole download stays hybrid
-                    _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL, filename)
-                    # also attempt to write the canonical lock in safe_download (best-effort)
-                    try:
-                        from Thunder.utils.safe_download import set_hybrid_lock as _sd_set_hybrid_lock
-                        try:
-                            _sd_set_hybrid_lock(file_uid, HYBRID_LOCK_TTL, filename)
-                            logger.info("🔁 Also wrote hybrid lock to safe_download's map for cross-path visibility")
-                        except Exception as e:
-                            logger.warning(f"Could not write to safe_download's lock map: {e}")
-                    except Exception:
-                        logger.debug("safe_download.set_hybrid_lock not importable; skipped twin-write")
-
-                    # also ensure persistent lock present (best-effort)
-                    try:
-                        try:
-                            await set_persistent_lock(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                        except NameError:
-                            from Thunder.utils.safe_download import set_persistent_lock as _sd_set_persistent
-                            await _sd_set_persistent(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                        logger.info("🔁 Also wrote persistent lock to Mongo for cross-worker visibility.")
-                    except Exception as e:
-                        logger.warning(f"Mongo persistent lock write failed: {e}")
-
-                    return await stream_and_save(msg, request)
-
-                except Exception as e:
-                    logger.warning(
-                        f"Hybrid lock fallback failed for uid={file_uid[:8]}... chat_id={request.query.get('chat_id')} "
-                        f"message_id={message_id} error={e}"
-                    )
-                    # fallthrough to normal streaming
-
-            # ===== Range parsing =====
             range_header = request.headers.get("Range", "")
             start, end = parse_range_header(range_header, file_size)
             content_length = end - start + 1
-
-            # Full-file → 200
             full_range = (start == 0 and end == file_size - 1)
-            if full_range:
-                range_header = ""
 
-            # Headers
-            status = 200 if not range_header else 206
+            filename = file_info.get("file_name") or f"file_{secrets.token_hex(4)}"
+            encoded_filename = quote(filename)
+
             headers = {
                 "Content-Type": "application/octet-stream",
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Accept-Ranges": "bytes",
-                "Cache-Control": "public, max-age=31536000, immutable",
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Cache-Control": "public, max-age=31536000",
                 "Connection": "keep-alive",
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "strict-origin-when-cross-origin",
                 "X-Accel-Buffering": "no",
                 "Content-Length": str(content_length),
             }
-            if status == 206:
+            if not full_range:
                 headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-            # HEAD
             if request.method == "HEAD":
-                return web.Response(status=status, headers=headers)
+                work_loads[client_id] -= 1
+                return web.Response(status=206 if not full_range else 200, headers=headers)
 
-            # Prepare stream
-            response = web.StreamResponse(status=status, headers=headers)
+            response = web.StreamResponse(status=206 if not full_range else 200, headers=headers)
             await response.prepare(request)
 
-            # Streaming + adaptive state
-            _ad_cur_chunk   = AD_CHUNK_NORMAL
-            _ad_timeouts    = 0
-            _ad_good_streak = 0
-
-            CLIENT_CHUNK_SIZE = _ad_cur_chunk
+            CLIENT_CHUNK_SIZE = 1 * 1024 * 1024
             write_buffer = bytearray()
             bytes_sent = 0
             bytes_to_skip = start % CLIENT_CHUNK_SIZE
-            dc_retries = 0
 
-            # Speed monitor
-            last_check = time.time()
-            last_bytes = 0
-            slow_count = 0
-
-            # Stall watchdog
-            last_progress_ts = time.time()
-
-            # midstream threshold (bytes)
-            _midstream_min_bytes = int(MIDSTREAM_MIN_MB * 1024 * 1024)
+            STALL_SECONDS = 5.0
+            MAX_STALL_RETRIES = 1
+            stall_retries = 0
 
             while True:
+                stall_triggered = False
+                last_progress = time.time()
+                main_task = asyncio.current_task()
+
+                async def _stall_watcher():
+                    nonlocal stall_triggered
+                    try:
+                        while True:
+                            await asyncio.sleep(1)
+                            progress_ratio = bytes_sent / content_length if content_length else 0.0
+                            if progress_ratio < 0.95:
+                                continue
+
+                            idle = time.time() - last_progress
+                            if idle > STALL_SECONDS:
+                                stall_triggered = True
+                                logger.warning(
+                                    f"Late stall detected for message {message_id}: "
+                                    f"{idle:.1f}s without progress at "
+                                    f"{progress_ratio*100:.1f}% "
+                                    f"({bytes_sent}/{content_length} bytes)"
+                                )
+                                try:
+                                    main_task.cancel()
+                                except Exception:
+                                    pass
+                                return
+                    except asyncio.CancelledError:
+                        return
+
+                watcher = asyncio.create_task(_stall_watcher())
+
                 try:
-                    async for chunk in streamer.stream_file(
-                        message_id,
-                        offset=start + bytes_sent,
-                        limit=content_length - bytes_sent
-                    ):
-                        # align
+
+                    # ===============================
+                    # 🔥 FIX APPLIED HERE (only change)
+                    # ===============================
+
+                    if mode == "leech":
+                        from utils.custom_dl import leech_stream_tg_cdn
+                        tg_streamer = leech_stream_tg_cdn(
+                            streamer,
+                            message_id,
+                            offset=start + bytes_sent,
+                            limit=content_length - bytes_sent
+                        )
+                    else:
+                        tg_streamer = streamer.stream_file(
+                            message_id,
+                            offset=start + bytes_sent,
+                            limit=content_length - bytes_sent,
+                        )
+
+                    async for chunk in tg_streamer:
+                        last_progress = time.time()
+
                         if bytes_to_skip:
                             if len(chunk) <= bytes_to_skip:
                                 bytes_to_skip -= len(chunk)
@@ -301,13 +446,9 @@ async def media_delivery(request: web.Request):
                             chunk = chunk[bytes_to_skip:]
                             bytes_to_skip = 0
 
-                        # bound to requested range
                         remaining = content_length - bytes_sent
                         if len(chunk) > remaining:
                             chunk = chunk[:remaining]
-
-                        if chunk:
-                            last_progress_ts = time.time()
 
                         write_buffer.extend(chunk)
                         if len(write_buffer) >= CLIENT_CHUNK_SIZE:
@@ -315,227 +456,100 @@ async def media_delivery(request: web.Request):
                                 await response.write(write_buffer)
                                 await response.drain()
                                 write_buffer = bytearray()
-
-                                if bytes_sent and bytes_sent % (ASYNC_YIELD_INTERVAL_MB * CLIENT_CHUNK_SIZE) == 0:
+                                if bytes_sent % (3 * CLIENT_CHUNK_SIZE) == 0:
                                     await asyncio.sleep(0)
                             except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
                                 logger.warning("⚠️ Client disconnected mid-stream.")
-                                break
+                                return response
                             except BufferError:
-                                logger.warning("⚠️ Buffer conflict detected — recreating buffer.")
                                 write_buffer = bytearray()
 
                         bytes_sent += len(chunk)
-
-                        # ---- speed / adaptive / hybrid triggers ----
-                        now = time.time()
-                        if now - last_check >= 1:
-                            elapsed = now - last_check
-                            downloaded = bytes_sent - last_bytes
-                            speed_MBps = (downloaded / (1024 * 1024)) / max(0.001, elapsed)
-
-                            # adaptive streaks
-                            if speed_MBps < AD_LOW_MBPS:
-                                _ad_good_streak = 0
-                            else:
-                                _ad_good_streak += 1
-
-                            # restore to normal chunk
-                            if (_ad_cur_chunk == AD_CHUNK_FALLBACK
-                                and _ad_good_streak >= AD_GOOD_SEC
-                                and speed_MBps >= AD_RECOVER_MBPS):
-                                _ad_cur_chunk = AD_CHUNK_NORMAL
-                                CLIENT_CHUNK_SIZE = _ad_cur_chunk
-                                _ad_log(f"Chunk size restored → {AD_CHUNK_NORMAL // 1024} KB "
-                                        f"(stable {speed_MBps:.2f} MB/s for {AD_GOOD_SEC}s)")
-                                _ad_good_streak = 0
-
-                            # pre-send windowing
-                            if speed_MBps < SAFE_SWITCH_THRESHOLD_MBPS:
-                                slow_count += 1
-                            else:
-                                slow_count = 0
-
-                            logger.info(f"⚙️ Stream speed: {speed_MBps:.2f} MB/s | SlowCount={slow_count}")
-
-                            # PRE-SEND hybrid (old behavior)
-                            if slow_count >= SAFE_SWITCH_DURATION_SEC and bytes_sent == 0 and len(write_buffer) == 0:
-                                logger.warning(
-                                    f"⚡ Speed too low ({speed_MBps:.2f} MB/s) — switching to SafeDownload hybrid mode (pre-send)."
-                                )
-                                try:
-                                    chat_id = (
-                                        getattr(StreamBot, "chat_id", None)
-                                        or request.query.get("chat_id")
-                                        or os.getenv("BIN_CHANNEL")
-                                    )
-                                    if not chat_id:
-                                        raise FileNotFound("Chat ID unavailable for fallback.")
-                                    chat_id = int(str(chat_id).replace("@", "").strip())
-
-                                    keys = list(multi_clients.keys())
-                                    try:
-                                        cur_ix = keys.index(client_id)
-                                    except ValueError:
-                                        cur_ix = 0
-                                    alt_id = keys[(cur_ix + 1) % len(keys)] if (USE_ALT_CLIENT and len(keys) > 1) else client_id
-                                    hybrid_cli = multi_clients[alt_id]
-                                    if alt_id != client_id:
-                                        logger.info(f"🔁 Hybrid using alternate client ID {alt_id}.")
-
-                                    await ensure_client_started(hybrid_cli)
-                                    msg = await hybrid_cli.get_messages(chat_id, int(message_id))
-                                    if not msg:
-                                        raise FileNotFound(f"Failed to fetch message {message_id} from chat {chat_id}")
-
-                                    _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL, filename)
-                                    # twin-write to canonical map if possible
-                                    try:
-                                        from Thunder.utils.safe_download import set_hybrid_lock as _sd_set_hybrid_lock
-                                        try:
-                                            _sd_set_hybrid_lock(file_uid, HYBRID_LOCK_TTL, filename)
-                                            logger.info("🔁 Also wrote hybrid lock to safe_download's map for cross-path visibility")
-                                        except Exception as e:
-                                            logger.warning(f"Could not write to safe_download's lock map: {e}")
-                                    except Exception:
-                                        logger.debug("safe_download.set_hybrid_lock not importable; skipped twin-write")
-
-                                    # also persist to Mongo (best-effort)
-                                    try:
-                                        try:
-                                            await set_persistent_lock(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                                        except NameError:
-                                            from Thunder.utils.safe_download import set_persistent_lock as _sd_set_persistent
-                                            await _sd_set_persistent(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                                        logger.info("🔁 Also wrote persistent lock to Mongo for cross-worker visibility.")
-                                    except Exception as e:
-                                        logger.warning(f"Mongo persistent lock write failed: {e}")
-
-                                    return await stream_and_save(msg, request)
-
-                                except Exception as e:
-                                    logger.error(f"Hybrid switch failed (continuing normal stream): {e}")
-
-                            # MID-STREAM hybrid (new behavior)
-                            if (bytes_sent >= _midstream_min_bytes) and (slow_count >= MIDSTREAM_SLOW_SEC):
-                                logger.warning(
-                                    f"⚡ Midstream slow ({speed_MBps:.2f} MB/s for {slow_count}s, "
-                                    f"sent ~{bytes_sent/1_048_576:.1f}MB) → setting hybrid lock & closing for resume."
-                                )
-                                _hybrid_lock_set(file_uid, HYBRID_LOCK_TTL, filename)
-                                # also attempt twin-write to canonical safe_download map (best-effort)
-                                try:
-                                    from Thunder.utils.safe_download import set_hybrid_lock as _sd_set_hybrid_lock
-                                    try:
-                                        _sd_set_hybrid_lock(file_uid, HYBRID_LOCK_TTL, filename)
-                                        logger.info("🔁 Also wrote hybrid lock to safe_download's map for cross-path visibility")
-                                    except Exception as e:
-                                        logger.warning(f"Could not write to safe_download's lock map: {e}")
-                                except Exception:
-                                    logger.debug("safe_download.set_hybrid_lock not importable; skipped twin-write")
-
-                                # also persist to Mongo (best-effort)
-                                try:
-                                    try:
-                                        await set_persistent_lock(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                                    except NameError:
-                                        from Thunder.utils.safe_download import set_persistent_lock as _sd_set_persistent
-                                        await _sd_set_persistent(file_uid, ttl_seconds=HYBRID_LOCK_TTL, file_name=filename, by="system")
-                                    logger.info("🔁 Also wrote persistent lock to Mongo for cross-worker visibility.")
-                                except Exception as e:
-                                    logger.warning(f"Mongo persistent lock write failed: {e}")
-
-                                # flush and close current response
-                                try:
-                                    if write_buffer:
-                                        await response.write(write_buffer)
-                                        await response.drain()
-                                except Exception:
-                                    pass
-                                try:
-                                    await response.write_eof()
-                                except Exception:
-                                    pass
-
-                                # return a tiny 206 so client/proxy surely does Range resume
-                                return web.Response(status=206, text="Hybrid switch triggered; please resume download.")
-
-                            # STALL WATCHDOG
-                            if (now - last_progress_ts) > STALL_DEADLINE_SEC and bytes_sent < content_length:
-                                logger.warning(
-                                    f"⏳ No progress for {now - last_progress_ts:.1f}s "
-                                    f"(sent {bytes_sent}/{content_length}). Closing to trigger client resume."
-                                )
-                                try:
-                                    if write_buffer:
-                                        await response.write(write_buffer)
-                                        await response.drain()
-                                except Exception:
-                                    pass
-                                try:
-                                    await response.write_eof()
-                                except Exception:
-                                    pass
-                                return web.Response(status=206, text="Stall detected; please resume download.")
-
-                            last_check = now
-                            last_bytes = bytes_sent
-
                         if bytes_sent >= content_length:
                             break
 
-                    break  # success; leave retry loop
-
-                except Exception as e:
-                    # Adaptive: downgrade on TIMEOUTs
-                    if "TIMEOUT" in str(e).upper():
-                        _ad_timeouts += 1
-                        if _ad_timeouts >= AD_DOWNGRADE_TIMEOUTS and _ad_cur_chunk != AD_CHUNK_FALLBACK:
-                            _ad_cur_chunk = AD_CHUNK_FALLBACK
-                            CLIENT_CHUNK_SIZE = _ad_cur_chunk
-                            _ad_log(f"Chunk size downgraded → {AD_CHUNK_FALLBACK // 1024} KB (timeouts hit: {AD_DOWNGRADE_TIMEOUTS})")
-                            _ad_timeouts = 0
-                        await asyncio.sleep(0.5)
-                        continue
-
-                    # DC migration hints
-                    if any(dc in str(e) for dc in ["PHONE_MIGRATE", "NETWORK_MIGRATE", "USER_MIGRATE", "FILE_MIGRATE"]):
-                        dc_retries += 1
-                        if dc_retries > 3:
-                            raise
-                        logger.warning(f"🌐 DC mismatch detected — reconnecting attempt {dc_retries}")
-                        await asyncio.sleep(1.5)
+                except asyncio.CancelledError:
+                    if stall_triggered:
+                        stall_retries += 1
+                        logger.warning(
+                            f"Retrying after late stall for {message_id} "
+                            f"({stall_retries}/{MAX_STALL_RETRIES}) at "
+                            f"{bytes_sent}/{content_length} bytes"
+                        )
+                        if stall_retries > MAX_STALL_RETRIES:
+                            raise web.HTTPInternalServerError(
+                                text="Streaming stalled near completion"
+                            )
+                        try:
+                            await asyncio.sleep(1.0)
+                        except asyncio.CancelledError:
+                            return response
                         continue
                     else:
-                        raise
+                        logger.warning(
+                            f"Streaming cancelled (likely client disconnect) "
+                            f"for message {message_id} at {bytes_sent}/{content_length} bytes"
+                        )
+                        return response
 
-            # Final flush
+                finally:
+                    if not watcher.done():
+                        watcher.cancel()
+
+                break
+
             if write_buffer:
                 try:
                     await response.write(write_buffer)
                     await response.drain()
                 except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
-                    logger.warning("⚠️ Client disconnected during final flush.")
+                    return response
 
             try:
                 await response.write_eof()
-            except (ConnectionResetError, ClientConnectionResetError, ConnectionError):
-                logger.info("Client closed connection before EOF; ignoring.")
+            except Exception:
+                pass
 
-            return response  # ✅ success path
+            elapsed = time.time() - download_start
+            if bytes_sent > 0 and elapsed > 0:
+                stats = CLIENT_STATS[client_id]
+                stats["bytes"] += bytes_sent
+                stats["time"] += elapsed
+                speed_mbps = (bytes_sent / elapsed) * 8 / 1_000_000
+                logger.info(
+                    f"[MEDIA-DONE] mode={mode} client_id={client_id} "
+                    f"bytes_sent={bytes_sent} elapsed={elapsed:.2f}s "
+                    f"speed={speed_mbps:.2f} Mbps"
+                )
 
-        except (FileNotFound, InvalidHash):
-            raise
         except Exception as e:
+            stats = CLIENT_STATS[client_id]
+            stats["errors"] += 1
             error_id = secrets.token_hex(6)
-            logger.error(f"Stream error {error_id}: {e}", exc_info=True)
+            logger.error(
+                f"[MEDIA-ERROR] id={error_id} mode={mode} client_id={client_id} "
+                f"bytes_sent={locals().get('bytes_sent', 0)} msg_id={message_id} error={e}",
+                exc_info=True,
+            )
             raise web.HTTPInternalServerError(text=f"Streaming error: {error_id}") from e
+
         finally:
-            work_loads[client_id] = max(0, work_loads.get(client_id, 0) - 1)
+            work_loads[client_id] -= 1
+
+        return response
 
     except (InvalidHash, FileNotFound):
         raise web.HTTPNotFound(text="Resource not found")
+
     except Exception as e:
         error_id = secrets.token_hex(6)
-        logger.error(f"Server error {error_id}: {e}", exc_info=True)
+        logger.error(
+            f"[MEDIA-SERVER-ERROR] id={error_id} path={request.path} error={e}",
+            exc_info=True,
+        )
         raise web.HTTPInternalServerError(text=f"Unexpected server error: {error_id}") from e
+                            
+
+
+
+
