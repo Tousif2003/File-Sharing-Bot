@@ -1,0 +1,194 @@
+<!-- (c) Filmymod7 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta property="og:image" content="https://i.ibb.co/M8S0Zzj/live-streaming.png" itemprop="thumbnailUrl">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s</title>
+
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Delius">
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.6.12/plyr.css"/>
+
+<style>
+      marquee{
+        font-size: 22px;
+        color: Black;
+        font-family: serif;
+      }
+</style>
+
+<style>
+    body {
+        font-family: sans-serif;
+        font-size: 16px;
+        margin: 0;
+        padding: 0;
+    }
+    #player-container {
+        margin: 1px;
+    }
+    .container {
+        margin: 0 1px;
+        margin-bottom: 20px;
+    }
+    .set-container {
+        padding: 15px;
+    }
+    .containerbox {
+        margin-bottom: 70px;
+    }
+    .mainupdates {
+        margin-bottom: 60px;
+    }
+    
+    #info-box {
+        border: 1px solid #140cf0;
+        border-radius: 10px;
+        padding: 5px;
+        margin: 10px;
+        text-align: left;
+        box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+        word-wrap: break-word;
+    }
+
+    /* Pure HTML Stream Buttons */
+    .vlc-btn-html {
+        background-color:#f8f9ff;
+        border-radius:12px;
+        height:55px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        box-shadow:0 0 8px rgba(0,0,0,0.1);
+        margin-bottom:15px;
+        overflow:hidden;
+        width:100%%;
+    }
+    .vlc-btn-html img {
+        width:100%%;
+        height:100%%;
+        object-fit:contain;
+    }
+
+    #button-container2 button {
+        height: 40px;
+        padding: 0 20px;
+        margin: 5px;
+        font-size: 16px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        background-color:#2D76FF;
+        color:#fff;
+    }
+
+</style>
+</head>
+
+<body>
+<div class="set-container">
+    <div class="container">
+        <header>
+            <marquee bgcolor="#808080">
+                <div>%s</div>
+            </marquee>
+        </header>
+
+        <!-- Player -->
+        <video src="%s" class="player" controls playsinline></video>
+    </div>
+
+<!-- STREAM OPTIONS -->
+<div class="containerbox"> 
+    <div style="margin-bottom: 5px; margin-top: 10px">
+        𝐒𝐭𝐫𝐞𝐚𝐦 𝐎𝐩𝐭𝐢𝐨𝐧𝐬 :
+    </div>
+
+    <!-- VLC -->
+    <a href="intent:%s#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title=%s;S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
+       class="vlc-btn-html">
+        <img src="https://i.ibb.co/GtnGhBV/videolan-vlc-logo-icon-170258.png" alt="VLC">
+    </a>
+
+    <!-- XPlayer -->
+    <a href="intent:%s#Intent;type=video/*;action=android.intent.action.VIEW;package=video.player.videoplayer;S.title=%s;S.browser_fallback_url=https://play.google.com/store/apps/details?id=video.player.videoplayer;end"
+       class="vlc-btn-html">
+        <img src="https://i.ibb.co/pByqt2ZK/x.png" alt="XPlayer">
+    </a>
+
+    <!-- KMPlayer -->
+    <a href="intent:%s#Intent;type=video/*;action=android.intent.action.VIEW;package=com.kmplayer;S.title=%s;S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.kmplayer;end"
+       class="vlc-btn-html">
+        <img src="https://i.ibb.co/bjPYQjkZ/x.png" alt="KMPlayer">
+    </a>
+
+    <!-- Playit -->
+    <a href="intent:%s#Intent;type=video/*;action=android.intent.action.VIEW;package=com.playit.videoplayer;S.title=%s;S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.playit.videoplayer;end"
+       class="vlc-btn-html">
+        <img src="https://i.ibb.co/JsDNHgz/c0C4vnAa.png" alt="Playit">
+    </a>
+
+    <!-- DOWNLOAD BUTTON -->
+    <div id="button-container2">
+        <button onclick="window.location.href='%s'">
+            <i class="fas fa-download"></i> Download Now
+        </button>
+    </div>
+</div>
+
+<!-- INFO -->
+<div class="containerbox"> 
+     <div id="info-box"> 
+         <p style="font-size: 15px; color:#120e0e;">
+            <FONT COLOR="#ff0000"><u><b>𝐍𝐨𝐭𝐞</u> :</b></FONT>
+            ɪꜰ ʏᴏᴜ ꜰɪɴᴅ ᴀɴʏ ʙʀᴏᴋᴇɴ ʟɪɴᴋ ᴘʟᴇᴀsᴇ ʀᴇᴘᴏʀᴛ ᴛᴏ 
+            <a href="https://telegram.me/FilmymodOwner_Bot" style="color: blue"><b>ᴍʏ sᴜᴘᴘᴏʀᴛ ᴛᴇᴀᴍ</b></a>
+         </p>
+     </div>
+</div>
+
+<!-- CHANNEL PROMO -->
+<div class="mainupdates">
+<center> 
+<div style="margin-bottom: 10px; margin-top: 20px">
+    𝐉𝐨𝐢𝐧 𝐎𝐮𝐫 𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐅𝐨𝐫 𝐌𝐨𝐫𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 💖
+</div>
+<h3><b>   
+    <a href="https://telegram.me/FilmyMod123">
+        <img src="https://img.shields.io/badge/Updates- Channel -blueviolet?style=for-the-badge" alt="Channel">
+    </a> 
+</b></h3>
+</center>
+</div>
+</div>
+
+<script src="https://cdn.plyr.io/3.6.12/plyr.js"></script>
+<script>
+Plyr.setup('.player', {
+    seekTime: 10,  // 10 sec forward/rewind time
+    controls: [
+        'play-large',
+        'rewind',         // ⏪ 10 seconds backward
+        'play',
+        'fast-forward',   // ⏩ 10 seconds forward
+        'progress',
+        'current-time',
+        'duration',
+        'fullscreen'
+    ]
+});
+</script>
+
+<footer>
+    <p style="font-size: 12px; color:#7b89a3;padding-top: 30px ;margin:0px 10px; border-top: 1px solid #c2cee3;">
+    This website only helps you play your videos online without downloading.
+    You can report videos with copyright issues here:
+    <a href="https://telegram.me/FilmymodOwner_Bot" style="color: red"><b>Report</b></a>
+    <p style="text-align:center">&copy; Copyright 2024<br>All Rights Reserved</p>
+</footer>
+
+</body>
+</html>
