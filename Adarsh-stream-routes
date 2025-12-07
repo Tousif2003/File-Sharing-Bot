@@ -183,23 +183,31 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
                 file_name = f"{secrets.token_hex(2)}.unknown"
     else:
         if file_name:
-            mime_type = mimetypes.guess_type(file_id.file_name)
+            mt = mimetypes.guess_type(file_id.file_name)[0]
+            mime_type = mt or "application/octet-stream"
         else:
             mime_type = "application/octet-stream"
             file_name = f"{secrets.token_hex(2)}.unknown"
 
+    is_range = bool(range_header)
+    content_type = mime_type if is_range else "application/octet-stream"
+
+    headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(req_length),
+        "Content-Disposition": f'{disposition}; filename="{file_name}"',
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff",
+        "Connection": "keep-alive",
+        "Cache-Control": "public, max-age=31536000",
+    }
+
+    if is_range:
+        headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+        headers["Accept-Ranges"] = "bytes"
+
     return web.Response(
-        status=206 if range_header else 200,
+        status=206 if is_range else 200,
         body=body,
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
-            "Content-Length": str(req_length),
-            "Content-Disposition": f'{disposition}; filename="{file_name}"',
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=31536000",
-            "Connection": "keep-alive",
-            "X-Content-Type-Options": "nosniff",
-            "X-Accel-Buffering": "no",
-        },
+        headers=headers,
     )
