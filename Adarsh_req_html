@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta property="og:image" content="https://i.ibb.co/M8S0Zzj/live-streaming.png" itemprop="thumbnailUrl">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ heading }}</title>
+
+    <!-- Fonts & Icons -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway|Delius">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+
+    <!-- Plyr Video Player -->
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+
+    <style>
+        body {
+            font-family: sans-serif;
+            font-size: 16px;
+            margin: 0;
+            padding: 0;
+        }
+
+        marquee {
+            font-size: 22px;
+            color: black;
+            font-family: serif;
+        }
+
+        .set-container {
+            padding: 15px;
+        }
+
+        #player-container {
+            margin: 10px 0;
+        }
+
+        /* 🔴 Clean Developer-Style Red Border – Square Shape */
+        #player,
+        .plyr {
+            border: 2px solid #e53935 !important; /* professional dark red */
+            border-radius: 6px; /* curve square edges */
+            box-shadow: none; /* no glow */
+        }
+
+        #info-box {
+            border: 1px solid #140cf0;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            word-wrap: break-word;
+        }
+
+        .stream-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .stream-options a {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 5px 10px;
+            border-radius: 6px;
+            background-color: #2D76FF;
+            color: #fff;
+            transition: all 0.3s;
+        }
+
+        .stream-options a:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            padding: 8px 12px;
+            margin-bottom: 20px;
+            border-radius: 6px;
+            background-color: #28a745;
+            color: #fff;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .download-btn:hover {
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+            transform: scale(1.05);
+        }
+
+        footer {
+            font-size: 12px;
+            color: #7b89a3;
+            padding: 20px 10px 0 10px;
+            border-top: 1px solid #c2cee3;
+            text-align: center;
+        }
+
+        footer a {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="set-container">
+
+    <!-- Marquee Header -->
+    <header>
+        <marquee bgcolor="#808080">
+            <div id="file-name">{{ file_name }}</div>
+        </marquee>
+    </header>
+
+<!-- Video Player -->
+<div id="player-container">
+  <video
+    id="player"
+    playsinline
+    controls
+    preload="metadata"
+    crossorigin="anonymous"
+    controlsList="nodownload"
+    aria-label="Video player"
+  >
+    <source src="{{ src }}" type="video/mp4">
+    <p>
+      Your browser does not support the video tag.
+      Please <a href="{{ src }}" download>download the video</a> instead.
+    </p>
+  </video>
+</div>
+
+<!-- Stream Options -->  <div class="note-wrapper">  
+  <p class="fancy-text">  
+    ✦ ɴᴏᴛᴇ: ᴀʟᴡᴀʏꜱ ᴜꜱᴇ ᴠʟᴄ ᴘʟᴀʏᴇʀ ꜰᴏʀ ꜱᴍᴏᴏᴛʜ ꜱᴛʀᴇᴀᴍɪɴɢ ᴀɴᴅ ᴀʟʟ ᴀᴜᴅɪᴏ ꜱᴜᴘᴘᴏʀᴛ ✦  
+  </p>  
+</div>  <!-- ✅ Stable, Custom Delay + Instant Smooth Scroll -->  <style>  
+:root {  
+  --delay-time: 3s; /* ⏳ Change this to 0s, 1s, 2s, etc. */  
+}  
+  
+.note-wrapper {  
+  overflow: hidden;  
+  white-space: nowrap;  
+  box-sizing: border-box;  
+  padding: 6px 0;  
+  position: relative;  
+}  
+  
+.fancy-text {  
+  display: inline-block;  
+  font-weight: 700;  
+  font-size: 1.4rem;  
+  color: #8a2be2;  
+  letter-spacing: 0.5px;  
+  will-change: transform;  
+  animation: scroll-text 20s linear infinite;  
+  animation-delay: calc(-5s + var(--delay-time)); /* ✅ custom + instant start */  
+}  
+  
+/* Smooth infinite scroll */  
+@keyframes scroll-text {  
+  0% { transform: translateX(100%); }  
+  100% { transform: translateX(-100%); }  
+}  
+</style>
+
+<!-- Stream Grid Layout -->
+<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+    
+    <!-- VLC -->
+    <a data-no-autoplay="1"
+       href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/GtnGhBV/videolan-vlc-logo-icon-170258.png" alt="VLC" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- XPlayer -->
+    <a data-no-autoplay="1"
+       href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=video.player.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=video.player.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/pByqt2ZK/x.png" alt="XPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- KMPlayer -->
+    <a data-no-autoplay="1"
+       href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.kmplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.kmplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/bjPYQjkZ/x.png" alt="KMPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- Playit -->
+    <a data-no-autoplay="1"
+       href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.playit.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.playit.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/JsDNHgz/c0C4vnAa.png" alt="Playit" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+</div>
+    
+<!-- Download started message -->
+<div id="download-toast"
+     style="
+        position:fixed;
+        bottom:24px;
+        left:50%;
+        transform:translateX(-50%) translateY(20px);
+        display:flex;
+        align-items:center;
+        gap:14px;
+        padding:14px 20px;
+        background:#fff7e6;
+        color:#000;
+        border-radius:18px;
+        box-shadow:0 10px 25px rgba(0,0,0,.25);
+        font-size:15px;
+        font-weight:500;
+        white-space:nowrap;
+        opacity:0;
+        pointer-events:none;
+        transition:opacity .35s ease, transform .35s ease;
+        z-index:9999;
+     ">
+    <div style="
+        width:42px;
+        height:42px;
+        border-radius:50%;
+        background:#1b7c2d;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        color:#fff;
+        font-size:15px;
+        flex-shrink:0;
+    ">✓</div>
+    <span>Download started</span>
+</div>
+    
+<!-- Old-style stable Download Button -->
+<div id="button-container2" style="width:100%;display:flex;justify-content:center;margin:15px 0;">
+    <a id="dl-btn"
+       data-no-autoplay="1"
+       href="{{ src }}"
+       download
+       style="width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;
+              gap:10px;background:#2D76FF;color:#fff;border-radius:12px;
+              padding:15px;font-size:18px;font-weight:700;
+              box-shadow:0 0 15px #2d76ff;cursor:pointer;text-decoration:none;">
+        <i class="fas fa-download"></i>
+        Download Now
+    </a>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("dl-btn");
+    const toast = document.getElementById("download-toast");
+    const video = window.videoEl || document.querySelector("video");
+    if (!btn) return;
+    btn.addEventListener("click", e => {
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+        try { video?.pause(); } catch {}
+        try { window.player?.pause?.(); } catch {}
+        if (toast) {
+            toast.style.opacity = "1";
+            toast.style.transform = "translateX(-50%) translateY(0)";
+            clearTimeout(window.__dlToastTimer);
+            window.__dlToastTimer = setTimeout(() => {
+                toast.style.opacity = "0";
+                toast.style.transform = "translateX(-50%) translateY(20px)";
+            }, 2200);
+        }
+    }, true);
+});
+</script>
+
+<style>
+/* Pop & Bounce effect */
+@keyframes popBounce {
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1.1); }
+  70% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+/* Base style for all buttons: visible but scaled down initially */
+.stream-options a,
+.card.card-body {
+  transform: scale(0.8); /* start smaller */
+  animation: popBounce 0.6s ease forwards;
+  animation-fill-mode: forwards;
+}
+
+/* Sequential animation: initial wait 1.5s, then each button 0.5s after previous */
+.stream-options a:nth-child(1),
+.card.card-body:nth-child(1) { animation-delay: 1.5s; }
+.stream-options a:nth-child(2),
+.card.card-body:nth-child(2) { animation-delay: 2s; }
+.stream-options a:nth-child(3),
+.card.card-body:nth-child(3) { animation-delay: 2.5s; }
+.stream-options a:nth-child(4),
+.card.card-body:nth-child(4) { animation-delay: 3s; }
+.stream-options a:nth-child(5),
+.card.card-body:nth-child(5) { animation-delay: 3.5s; }
+.stream-options a:nth-child(6),
+.card.card-body:nth-child(6) { animation-delay: 4s; }
+
+/* Remove old fade/slide effects */
+.fadeInLeft, .fadeInRight, .shakeX {
+  animation-name: none !important;
+}
+</style>
+
+    <!-- Info Box -->
+    <div id="info-box">
+        <p style="font-size: 15px; color:#120e0e;">
+           <span style="color:#ff0000;"><u><b>𝐍𝐨𝐭𝐞</b></u></span> : ɪꜰ ʏᴏᴜ ꜰɪɴᴅ ᴀɴʏ ʙʀᴏᴋᴇɴ ʟɪɴᴋ ᴛʜᴇɴ ᴘʟᴇᴀsᴇ ʀᴇᴘᴏʀᴛ ᴛᴏ ᴍʏ 
+            <a href="https://telegram.me/FilmymodOwner_Bot" style="color: blue"><b>sᴜᴘᴘᴏʀᴛ ᴛᴇᴀᴍ</b></a>
+        </p>
+    </div>
+
+    <!-- Main Updates -->
+    <div class="mainupdates" style="text-align:center; margin-top:20px;">
+        <div style="margin-bottom: 10px;">𝐉𝐨𝐢𝐧 𝐎𝐮𝐫 𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐅𝐨𝐫 𝐌𝐨𝐫𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 💖</div>
+        <a href="https://telegram.me/FilmyMod123">
+            <img src="https://img.shields.io/badge/Updates- Channel -blueviolet?style=for-the-badge" alt="Channel">
+        </a>
+    </div>
+
+</div>
+
+<!-- ✅ Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+<!-- ✅ Plyr CSS & JS -->
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+
+<!-- ✅ HLS & DASH (optional adaptive) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+
+<style>
+  /* user's original small focus tweak */
+  .plyr__control:focus {
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* --- sane stacking for Plyr controls (safe defaults) --- */
+  .plyr__controls {
+    position: relative;
+    z-index: 2 !important;            /* modest z-index so controls don't cover page elements */
+    pointer-events: auto !important;
+  }
+
+  /* keep big play overlay visually on top of video but not covering controls */
+  .plyr__play-large {
+    z-index: 4 !important;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: auto !important;
+  }
+
+  /* slightly reduce overlay on very small screens */
+  @media (max-width: 640px) {
+    .plyr__play-large { transform: translate(-50%, -60%) scale(0.95); }
+  }
+
+  /* landscape custom button style (single class) */
+  .landscape-btn {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:2px;
+    padding:5px 8px;
+    border-radius:8px;
+    background: transparent;
+    color: #fff;
+    margin-left:6px;
+    border: none;
+    cursor: pointer;
+  }
+
+  /* page helper classes (won't conflict if your page has its own styles) */
+  .req-player-wrap { width:100%; max-width:980px; }
+  .req-player-video { width:100%; border-radius:10px; display:block; }
+
+  /* optional: make sure custom appended buttons don't inherit undesirable styles */
+  .plyr__controls .landscape-btn { font: inherit; }
+  
+/* === Mobile Responsive Controls (portrait only, default size + better tap space) === */
+
+/* ✅ Normal mode (portrait) spacing — comfortable tap zones */
+.plyr__control[data-plyr="rewind"],
+.plyr__control[data-plyr="play"]:not(.plyr__play-large),
+.plyr__control[data-plyr="pause"]:not(.plyr__play-large),
+.plyr__control[data-plyr="fast-forward"] {
+  padding: 10px 12px !important;
+  margin: 0 0px !important;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+/* ✅ Remove default Plyr flex gap between buttons */
+.plyr__controls {
+  gap: 0px !important; /* <<-- Ye line space remove karegi */
+}
+
+/* ✅ Keep icon sizes default */
+.plyr__control[data-plyr="rewind"] svg,
+.plyr__control[data-plyr="play"]:not(.plyr__play-large) svg,
+.plyr__control[data-plyr="pause"]:not(.plyr__play-large) svg,
+.plyr__control[data-plyr="fast-forward"] svg {
+  width: 20px !important;
+  height: 20px !important;
+}
+
+/* ✅ Hover feedback */
+.plyr__control[data-plyr="rewind"]:hover,
+.plyr__control[data-plyr="pause"]:not(.plyr__play-large):hover,
+.plyr__control[data-plyr="fast-forward"]:hover {
+  transform: scale(1.05);
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ✅ Landscape mode — Compact bigger controls (keep same) */
+@media (orientation: landscape) {
+
+  /* 🎯 Apply only to small control buttons (not the big play overlay) */
+  .plyr__control[data-plyr="rewind"],
+  .plyr__control[data-plyr="play"]:not(.plyr__play-large),
+  .plyr__control[data-plyr="pause"],
+  .plyr__control[data-plyr="fast-forward"] {
+    width: 50px !important;
+    height: 50px !important;
+    font-size: 20px !important;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.25s ease-in-out;
+  }
+
+  /* 🎨 SVG icon size */
+  .plyr__control[data-plyr="rewind"] svg,
+  .plyr__control[data-plyr="play"]:not(.plyr__play-large) svg,
+  .plyr__control[data-plyr="pause"] svg,
+  .plyr__control[data-plyr="fast-forward"] svg {
+    width: 30px !important;
+    height: 30px !important;
+  }
+
+  /* 🧩 Spacing between buttons */
+  .plyr__control[data-plyr="rewind"] {
+    margin-right: 9px !important;
+  }
+  .plyr__control[data-plyr="fast-forward"] {
+    margin-left: 9px !important;
+  }
+
+  /* ✨ Hover animation */
+  .plyr__control[data-plyr="rewind"]:hover,
+  .plyr__control[data-plyr="pause"]:hover,
+  .plyr__control[data-plyr="fast-forward"]:hover {
+    transform: scale(1.06);
+    background-color: rgba(255, 255, 255, 0.12);
+  }
+
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  /************************************************************************
+   * Integrated player block
+   * - This block assumes your page already has a <video id="player"> element.
+   * - It preserves the full original advanced logic (prefetch, MSE, sync)
+   *   and inserts defensive fixes:
+   *     • Plyr init guard (prevents duplicate initialization)
+   *     • sane CSS stacking (controls/play-large)
+   *     • idempotent manual play/pause + single landscape append
+   ************************************************************************/
+
+  // 🎬 Grab the video element that you already have on the page
+const videoEl = document.querySelector('#player');
+if (!videoEl) {
+  console.warn('req-player: #player element not found on page — player script aborted.');
+  return;
+}
+
+// ⚙️ Defensive attributes (ensure expected playback behavior)
+try {
+  // preload="auto" ensures browser starts buffering immediately
+  videoEl.setAttribute('preload', videoEl.getAttribute('preload') || 'auto');
+  videoEl.setAttribute('playsinline', '');
+  videoEl.setAttribute('crossorigin', 'anonymous');
+} catch (e) {
+  console.warn('req-player: failed to apply safe video attributes', e);
+}
+
+// 🎛️ Controls limited as requested (keeps UI minimal)
+const CONTROLS = [
+  'play-large', 'rewind', 'play', 'fast-forward',
+  'progress', 'current-time', 'duration'
+];
+
+/******************************************************
+ * 🧹 Plyr init guard: destroy any previous instance so we
+ * don't end up with duplicated controls or event handlers
+ ******************************************************/
+if (window.__reqPlyrInstance) {
+  try { window.__reqPlyrInstance.destroy(); } catch (e) { /* ignore */ }
+  window.__reqPlyrInstance = null;
+}
+
+// 🚀 Initialize Plyr instance
+window.__reqPlyrInstance = new Plyr(videoEl, { controls: CONTROLS });
+const player = window.__reqPlyrInstance;
+
+// ✅ Force buffering kick-start (fixes 0.0s stuck / no playback issue)
+if (videoEl && videoEl.readyState === 0) {
+  try {
+    videoEl.load();                 // Force reload of metadata + data
+    const playPromise = videoEl.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(() => {
+        console.warn('req-player: autoplay blocked, waiting for user gesture');
+      });
+    }
+  } catch (err) {
+    console.warn('req-player: buffering kick-start failed', err);
+  }
+}
+
+  /*******************************
+   * ============================
+   * ✅ Manual Play/Pause Button Fix (idempotent)
+   * Inserted into player.on('ready') with landscape append guard
+   * ============================
+   *******************************/
+  player.on('ready', () => {
+    try {
+      const controls = player.elements && player.elements.controls;
+      if (!controls) return;
+
+      // -------------------------
+      // Manual Play/Pause Button Fix (idempotent)
+      // -------------------------
+      const smallPlaySel = '.plyr__control[data-plyr="play"], .plyr__control--play';
+      const smallPlayBtn = controls.querySelector(smallPlaySel);
+      if (smallPlayBtn && !smallPlayBtn._manualPlayBound) {
+        smallPlayBtn._manualPlayBound = true;
+        const handler = async (e) => {
+          try { if (e && e.preventDefault) e.preventDefault(); } catch(_) {}
+          try {
+            // prefer Plyr API: keep internal state correct
+            if (player && typeof player.play === 'function' && typeof player.pause === 'function') {
+              if (player.playing) await player.pause();
+              else await player.play();
+              return;
+            }
+          } catch(err) {
+            console.warn('Plyr API toggle error (fallback to native):', err);
+          }
+          // fallback to native element
+          try {
+            if (videoEl.paused) await videoEl.play();
+            else videoEl.pause();
+          } catch(err) { console.warn('Native play/pause failed:', err); }
+        };
+        smallPlayBtn.addEventListener('click', handler, { passive: false });
+        smallPlayBtn.addEventListener('touchstart', handler, { passive: false });
+      }
+
+      // -------------------------
+      // Append Landscape button only if not already appended
+      // -------------------------
+      if (typeof createLandscapeButton === 'function') {
+        if (!controls.querySelector('.landscape-btn')) {
+          const landscapeBtn = createLandscapeButton();
+          landscapeBtn.classList.add('landscape-btn');
+          controls.appendChild(landscapeBtn);
+        }
+      }
+
+      // Defensive: ensure controls container styling does not break layout
+      try {
+        controls.style.pointerEvents = 'auto';
+        if (!controls.style.zIndex) controls.style.zIndex = '2';
+      } catch(e){}
+    } catch (e) {
+      console.warn('Play button patch failed', e);
+    }
+  });
+
+  /*******************************
+   * AudioContext + basic pipeline
+   *******************************/
+  let audioContext = null;
+  let gainNode = null;
+  function setupAudioContext() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      try {
+        const source = audioContext.createMediaElementSource(videoEl);
+        gainNode = audioContext.createGain();
+        gainNode.gain.value = 1.0; // normal by default
+        source.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+      } catch (e) {
+        console.warn('AudioContext createMediaElementSource failed', e);
+      }
+    }
+    audioContext && audioContext.resume().catch(()=>{});
+  }
+
+  // Ensure audio resume on user gesture
+  function ensureAudioPlayback() {
+    try {
+      if (!audioContext) setupAudioContext();
+      if (audioContext && audioContext.state === 'suspended') audioContext.resume().catch(()=>{});
+      if (videoEl.paused) videoEl.play().catch(()=>{});
+    } catch(e){}
+  }
+
+// ------- Robust unlock logic (ignore [data-no-autoplay], keep one-time unlock) -------
+let audioUnlocked = false;
+
+async function tryEnsureAudioPlayback() {
+  if (audioUnlocked) return;
+  try {
+    if (!audioContext) setupAudioContext();
+
+    // Resume audio context if suspended
+    if (audioContext && audioContext.state === 'suspended') {
+      await audioContext.resume().catch(()=>{});
+    }
+
+    // Try to play video (may be blocked if not allowed)
+    //if (videoEl && videoEl.paused) {
+    //  await videoEl.play().catch(()=>{});
+   // }
+
+    // Consider unlocked if audioContext running OR video is playing
+    audioUnlocked = (audioContext && audioContext.state === 'running') || (videoEl && !videoEl.paused);
+
+    // If unlocked, remove document listeners (cleanup)
+    if (audioUnlocked) {
+      try {
+        document.removeEventListener('click', onDocClick, true);
+        document.removeEventListener('touchstart', onDocTouch, true);
+      } catch (e) {}
+    }
+  } catch (e) {
+    // swallow errors silently; best-effort only
+  }
+}
+/*******************************
+ * Helper filters
+ *******************************/
+
+// data-no-autoplay wale elements ko detect karega
+function isNoAutoplayTarget(target) {
+  if (!target) return false;
+  let el = target.nodeType === 1 ? target : target.parentElement;
+  while (el) {
+    if (el.hasAttribute && el.hasAttribute('data-no-autoplay')) {
+      return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
+
+// Agar tumhare paas apna version hai to use replace kar dena.
+// Abhi ke liye sab clicks ko allowed मान रहे hain (return true).
+function isClickInsideAllowedButtons(e) {
+  return true;
+}
+
+/*******************************
+ * Global unlock handlers
+ *******************************/
+
+// Wrapper handlers that ignore elements with data-no-autoplay
+function onDocClick(e) {
+  try {
+    if (!e || !e.target) return;
+    if (isNoAutoplayTarget(e.target)) return;
+    if (!isClickInsideAllowedButtons(e)) return;
+    tryEnsureAudioPlayback();
+  } catch (_) {
+    tryEnsureAudioPlayback();
+  }
+}
+
+function onDocTouch(e) {
+  try {
+    if (!e || !e.target) return;
+    if (isNoAutoplayTarget(e.target)) return;
+    if (!isClickInsideAllowedButtons(e)) return;
+    tryEnsureAudioPlayback();
+  } catch (_) {
+    tryEnsureAudioPlayback();
+  }
+}
+
+// Attach as non-once listeners (we manually remove after unlock)
+// Use capture:true to ensure we see the event before some other handlers may call preventDefault
+document.addEventListener('click', onDocClick, { passive: true, capture: true });
+document.addEventListener('touchstart', onDocTouch, { passive: true, capture: true });
+
+// Keep video event listeners to re-affirm unlocking when playback starts programmatically
+videoEl.addEventListener('play', tryEnsureAudioPlayback);
+videoEl.addEventListener('playing', tryEnsureAudioPlayback);
+
+  /********************************************************
+   * Intelligent resume & buffer stabilization (original)
+   ********************************************************/
+  let seekTimeout;
+  videoEl.addEventListener('seeking', () => {
+    clearTimeout(seekTimeout);
+    try { videoEl.pause(); } catch(e){}
+    seekTimeout = setTimeout(() => {
+      if (videoEl.readyState >= 3) {
+        videoEl.play().catch(()=>{});
+      } else {
+        const resumeCheck = setInterval(() => {
+          if (videoEl.readyState >= 3) {
+            clearInterval(resumeCheck);
+            videoEl.play().catch(()=>{});
+          }
+        }, 150);
+        setTimeout(() => clearInterval(resumeCheck), 4000);
+      }
+    }, 120);
+  });
+
+  /********************************************************
+   * Landscape (custom) button only — function; appended in ready()
+   ********************************************************/
+  function createLandscapeButton() {
+    const btn = document.createElement('button');
+    btn.className = 'plyr__control landscape-btn';
+    btn.type = 'button';
+    Object.assign(btn.style, {
+      display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+      fontSize:'12px',color:'#fff',cursor:'pointer',padding:'5px 8px',marginLeft:'6px',
+      WebkitTapHighlightColor:'transparent', background:'transparent', border:'none'
+    });
+    btn.innerHTML = `
+      <i class="fas fa-expand" style="font-size:18px; color:#fff;"></i>
+      <span style="font-size:10px; color:#00ffcc; font-weight:bold;">Landscape</span>
+    `;
+    let isLandscape = false;
+    btn.addEventListener('click', async () => {
+      ensureAudioPlayback();
+      const label = btn.querySelector('span');
+      try {
+        if (!isLandscape) {
+          if (player && player.fullscreen) await player.fullscreen.enter();
+          if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+          label.innerText = 'Portrait';
+          label.style.color = '#ff9933';
+          isLandscape = true;
+        } else {
+          if (player && player.fullscreen) await player.fullscreen.exit();
+          if (screen.orientation?.unlock) screen.orientation.unlock();
+          label.innerText = 'Landscape';
+          label.style.color = '#00ffcc';
+          isLandscape = false;
+        }
+      } catch (e) { console.log(e); }
+    });
+    // ensure first click unlocks audio
+    btn.addEventListener('click', ensureAudioPlayback);
+    return btn;
+  } 
+
+  /************************************************************************
+   * AUDIO + VIDEO SYNC: robust synchronizer (keeps audio/video in sync)
+   ************************************************************************/
+
+  let audioOffset = 0;
+  let syncInterval = null;
+  let emaRate = 1.0;
+  const EMA_ALPHA = 0.18;
+  const POLL_MS = 120;
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function isTimeBuffered(time) {
+    try {
+      const buf = videoEl.buffered;
+      for (let i = 0; i < buf.length; i++) {
+        if (time >= buf.start(i) - 0.05 && time <= buf.end(i) + 0.05) {
+          return { start: buf.start(i), end: buf.end(i) };
+        }
+      }
+    } catch(e){}
+    return null;
+  }
+
+  function refreshAudioOffset() {
+    if (!audioContext) return;
+    try {
+      audioOffset = audioContext.currentTime - videoEl.currentTime;
+      const outLatency = (audioContext.outputLatency || audioContext.baseLatency || 0);
+      audioOffset -= outLatency;
+    } catch(e){}
+  }
+
+  function ensureAudioReady() {
+    if (!audioContext) return;
+    audioContext.resume().catch(()=>{});
+    setTimeout(refreshAudioOffset, 60);
+  }
+
+  function attemptBufferedRender(targetTime, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      let settled = false;
+      if (isTimeBuffered(targetTime)) return resolve(true);
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+        try {
+          const frameCheck = () => {
+            try {
+              videoEl.requestVideoFrameCallback(() => {
+                if (!settled && (isTimeBuffered(targetTime) || videoEl.currentTime >= (targetTime - 0.1))) {
+                  settled = true; resolve(true);
+                } else if (!settled && (performance.now() - start > timeoutMs)) {
+                  settled = true; resolve(false);
+                } else if (!settled) frameCheck();
+              });
+            } catch(e){}
+          };
+          frameCheck();
+        } catch(e){}
+      }
+      const poll = setInterval(() => {
+        if (isTimeBuffered(targetTime) || videoEl.readyState >= 3 || (performance.now() - start > timeoutMs)) {
+          clearInterval(poll);
+          if (!settled) { settled = true; resolve(isTimeBuffered(targetTime) || videoEl.readyState >= 3); }
+        }
+      }, 100);
+      setTimeout(() => { if (!settled) { settled = true; clearInterval(poll); resolve(false); } }, timeoutMs + 120);
+    });
+  }
+
+  function syncTick() {
+    if (!audioContext || videoEl.paused || videoEl.readyState < 2) {
+      emaRate = 1.0;
+      try { if (videoEl.playbackRate !== 1.0) videoEl.playbackRate = 1.0; } catch(e){}
+      return;
+    }
+    let expectedAudioTime = audioContext.currentTime - audioOffset;
+    if (typeof audioContext.outputLatency === 'number') expectedAudioTime -= audioContext.outputLatency;
+    else if (typeof audioContext.baseLatency === 'number') expectedAudioTime -= audioContext.baseLatency;
+
+    const vtime = videoEl.currentTime;
+    let drift = expectedAudioTime - vtime;
+    if (!isFinite(drift) || Math.abs(drift) > 300) { refreshAudioOffset(); return; }
+
+    // big drift => attempt safe seek to buffered region
+    if (Math.abs(drift) > 0.45) {
+      const targetTime = vtime + drift;
+      try {
+        const src = videoEl.currentSrc || videoEl.src;
+        if (src) {
+          const bitrate = 1.2 * 1024 * 1024;
+          const startByte = Math.max(0, Math.floor(targetTime * bitrate) - (4 * 1024 * 1024));
+          const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+          seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+        }
+      } catch(e){}
+      const buf = isTimeBuffered(targetTime);
+      if (buf) {
+        const safeTarget = clamp(targetTime, buf.start + 0.02, buf.end - 0.02);
+        try {
+          videoEl.pause();
+          videoEl.currentTime = safeTarget;
+          attemptBufferedRender(safeTarget, 4200).then((ok) => {
+            ensureAudioReady();
+            setTimeout(()=> { videoEl.play().catch(()=>{}); refreshAudioOffset(); }, 120);
+          });
+        } catch (e){}
+        return;
+      }
+    }
+// small drift -> gentle playbackRate correction (exponential smoothing)
+    const gain = 0.12;
+    let rawTargetRate = 1 - clamp(drift * gain, -0.06, 0.06);
+    if (Math.abs(drift) < 0.035) rawTargetRate = 1.0;
+    emaRate = emaRate + (rawTargetRate - emaRate) * EMA_ALPHA;
+    const finalRate = clamp(emaRate, 0.94, 1.06);
+    if (Math.abs(videoEl.playbackRate - finalRate) > 0.0009) {
+      try { videoEl.playbackRate = finalRate; } catch(e){}
+    }
+    if (Math.abs(drift) > 0.8) refreshAudioOffset();
+  }
+
+  function startSyncLoop() {
+    if (syncInterval) return;
+    refreshAudioOffset();
+    syncInterval = setInterval(syncTick, POLL_MS);
+    setTimeout(syncTick, 40);
+  }
+  function stopSyncLoop() {
+    if (!syncInterval) return;
+    clearInterval(syncInterval);
+    syncInterval = null;
+    try { videoEl.playbackRate = 1.0; } catch(e){}
+    emaRate = 1.0;
+  }
+
+  // seeking handlers: pause sync and suspend audio pipeline temporarily
+  let savedGainValue = 1.0;
+  videoEl.addEventListener('seeking', () => {
+    stopSyncLoop();
+    if (audioContext && audioContext.state === 'running') audioContext.suspend().catch(()=>{});
+    try { videoEl.pause(); } catch(e){}
+  });
+
+  videoEl.addEventListener('seeked', async () => {
+    try {
+      if (gainNode && audioContext) {
+        savedGainValue = gainNode.gain.value || 1.0;
+        gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+        gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      }
+    } catch(e){}
+
+    try {
+      const src = videoEl.currentSrc || videoEl.src;
+      if (src) {
+        const bitrate = 1.2 * 1024 * 1024;
+        const startByte = Math.max(0, Math.floor(videoEl.currentTime * bitrate) - (2 * 1024 * 1024));
+        const endByte = startByte + (adaptive.maxMB * 1024 * 1024);
+        seekWorker.postMessage({ id:Date.now(), task:'prefetch', src, range:`bytes=${startByte}-${endByte}`, timeout:9000 });
+      }
+    } catch(e){}
+
+    const target = videoEl.currentTime;
+    const ok = await attemptBufferedRender(target, 5200);
+
+    ensureAudioReady();
+    refreshAudioOffset();
+
+    setTimeout(() => {
+      try {
+        if (gainNode && audioContext) {
+          gainNode.gain.setValueAtTime(savedGainValue || 1.0, audioContext.currentTime);
+        }
+      } catch(e){}
+      startSyncLoop();
+      syncTick();
+    }, 140);
+  });
+
+  // play / playing listeners to (re)start sync loop
+  videoEl.addEventListener('play', () => {
+    ensureAudioReady();
+    refreshAudioOffset();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('playing', () => {
+    refreshAudioOffset();
+    syncTick();
+    startSyncLoop();
+  });
+  videoEl.addEventListener('ratechange', () => { emaRate = clamp(videoEl.playbackRate, 0.5, 2.0); });
+
+  // wrap setupAudioContext to start sync after audio created
+  const _origSetup = setupAudioContext;
+  setupAudioContext = function() {
+    _origSetup();
+    setTimeout(() => { try { refreshAudioOffset(); startSyncLoop(); } catch(e){} }, 80);
+  };
+
+  // optional helper: attachSource (HLS/DASH/fallback)
+  async function attachSource(src) {
+    if (!src) return;
+    if (src.endsWith('.m3u8') && window.Hls && Hls.isSupported()) {
+      try {
+        const hls = new Hls({ lowLatencyMode: true, maxBufferLength: 30 });
+        hls.loadSource(src);
+        hls.attachMedia(videoEl);
+        console.log('HLS attached');
+        return;
+      } catch (e) { console.warn('HLS attach failed', e); }
+    }
+    if (src.endsWith('.mpd') && window.dashjs) {
+      try {
+        const playerDash = dashjs.MediaPlayer().create();
+        playerDash.initialize(videoEl, src, false);
+        console.log('DASH attached');
+        return;
+      } catch (e) { console.warn('DASH attach failed', e); }
+    }
+    videoEl.src = src;
+  }
+  window.playerAttach = attachSource;
+
+  console.log('✅ Player initialized — limited controls + advanced optimizations + sync active');
+});
+</script>
+<!-- Footer -->
+<footer>
+    <p>
+        This website only provides a service to play videos online without downloading. It does not offer storage or dissemination functions. You can report videos that contain copyright issues, explicit content, 18+, violence, etc. 
+        <a href="https://telegram.me/FilmymodOwner_Bot">Report</a>
+    </p>
+    <p><b>&copy; Copyright 2025<br>All Rights Reserved</b></p>
+</footer>
+
+</body>
+</html>
