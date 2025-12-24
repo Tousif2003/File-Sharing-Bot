@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta property="og:image" content="https://i.ibb.co/M8S0Zzj/live-streaming.png" itemprop="thumbnailUrl">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>{{ heading }}</title>
+
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Delius">
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.6.12/plyr.css"/>
+
+<style>
+marquee{
+    font-size: 22px;
+    color: black;
+    font-family: serif;
+}
+body {
+    font-family: sans-serif;
+    font-size: 16px;
+    margin: 0;
+    padding: 0;
+}
+.container {
+    margin: 0 1px;
+    margin-bottom: 20px;
+}
+.set-container {
+    padding: 15px;
+}
+.containerbox {
+    margin-bottom: 25px;
+}
+.mainupdates {
+    margin-bottom: 15px;
+}
+#info-box {
+    border: 1px solid #140cf0;
+    border-radius: 10px;
+    padding: 5px;
+    margin: 10px;
+    box-shadow: 0px 4px 6px rgba(0,0,0,0.1);
+}
+.download-btn {
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:45px;
+    background:#2D76FF;
+    color:#fff;
+    font-size:16px;
+    border-radius:6px;
+    text-decoration:none;
+    margin:10px 0;
+}
+</style>
+</head>
+
+<body>
+<div class="set-container">
+
+<div class="container">
+<header>
+<marquee bgcolor="#808080">
+    <div>{{ file_name }}</div>
+</marquee>
+</header>
+
+<video class="player" controls playsinline>
+    <source src="{{ src }}" type="video/mp4">
+    Your browser does not support the video tag.
+</video>
+</div>
+    
+<!-- STREAM OPTIONS -->
+<div class="containerbox"> 
+    <div style="margin-bottom:5px; margin-top:10px; color:#8a2be2;">
+        𝐒𝐭𝐫𝐞𝐚𝐦 𝐎𝐩𝐭𝐢𝐨𝐧𝐬 :
+    </div>
+    
+<!-- Stream Grid Layout -->
+<div class="stream-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+    
+    <!-- VLC -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=org.videolan.vlc;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=org.videolan.vlc;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/GtnGhBV/videolan-vlc-logo-icon-170258.png" alt="VLC" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- XPlayer -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=video.player.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=video.player.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/pByqt2ZK/x.png" alt="XPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- KMPlayer -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.kmplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.kmplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/bjPYQjkZ/x.png" alt="KMPlayer" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+
+    <!-- Playit -->
+    <a href="intent:{{ src }}#Intent;type=video/*;action=android.intent.action.VIEW;package=com.playit.videoplayer;S.title={{ file_name }};S.browser_fallback_url=https://play.google.com/store/apps/details?id=com.playit.videoplayer;end"
+       style="background-color: #f8f9ff; border-radius: 12px; height: 50px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(0,0,0,0.08); overflow: hidden; transition: 0.3s; width: 100%;">
+        <img src="https://i.ibb.co/JsDNHgz/c0C4vnAa.png" alt="Playit" style="width: 100%; height: 100%; object-fit: contain;">
+    </a>
+</div>
+
+<!-- Download Button -->
+<a href="{{ src }}" download
+   style="display: flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; background-color: #2D76FF; color: #fff; border-radius: 12px; padding: 15px; margin-top: 15px; font-weight: bold; font-size: 18px; box-shadow: 0 0 15px #2d76ff; transition: all 0.3s;">
+    <i class="fas fa-download" style="font-size: 20px;"></i> Download Now
+</a>
+
+<!-- Info Box -->
+    <div id="info-box">
+        <p style="font-size: 15px; color:#120e0e;">
+           <span style="color:#ff0000;"><u><b>𝐍𝐨𝐭𝐞</b></u></span> : ɪꜰ ʏᴏᴜ ꜰɪɴᴅ ᴀɴʏ ʙʀᴏᴋᴇɴ ʟɪɴᴋ ᴛʜᴇɴ ᴘʟᴇᴀsᴇ ʀᴇᴘᴏʀᴛ ᴛᴏ ᴍʏ 
+            <a href="https://telegram.me/FilmymodOwner_Bot" style="color: blue"><b>sᴜᴘᴘᴏʀᴛ ᴛᴇᴀᴍ</b></a>
+        </p>
+    </div>
+
+    <!-- Main Updates -->
+    <div class="mainupdates" style="text-align:center; margin-top:20px;">
+        <div style="margin-bottom: 10px;">𝐉𝐨𝐢𝐧 𝐎𝐮𝐫 𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐅𝐨𝐫 𝐌𝐨𝐫𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 💖</div>
+        <a href="https://telegram.me/FilmyMod123">
+            <img src="https://img.shields.io/badge/Updates- Channel -blueviolet?style=for-the-badge" alt="Channel">
+        </a>
+    </div>
+
+<script src="https://cdn.plyr.io/3.6.12/plyr.js"></script>
+<script>
+Plyr.setup('.player',{
+  seekTime:10,
+  controls:['play-large','rewind','play','fast-forward','progress','current-time','duration','fullscreen']
+});
+</script>
+
+<!-- Footer -->
+<footer>
+    <p style="font-size:12px; color:#7b89a3; padding-top:12px; margin:0 10px; border-top:1px solid #c2cee3; line-height:1.4;">
+        This website only helps you play your videos online without downloading.
+        You can report videos with copyright issues here:
+        <a href="https://telegram.me/FilmymodOwner_Bot" style="color:red; font-weight:bold;">Report</a>
+    </p>
+
+    <p style="text-align:center; margin:8px 0 0 0; font-size:13px; color:#7b89a3;">
+        <b>&copy; Copyright 2026<br>All Rights Reserved</b>
+    </p>
+</footer>
+
+</body>
+</html>
